@@ -56,7 +56,185 @@ jobs:
           PY
 
       # =========================================================
+            # =========================================================
       # 3. GEMINI CREATES SCRIPT + TITLE + DESCRIPTION + TAGS
+      # =========================================================
+      - name: Generate complete content package
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import requests
+          import json
+          import os
+          import time
+
+          api_key = os.environ["GEMINI_API_KEY"]
+
+          topic = open("topic.txt", encoding="utf-8").read()
+          source = open("source.txt", encoding="utf-8").read()
+
+          prompt = f"""
+          You are the senior producer of a technology YouTube channel called TechMind.
+
+          CURRENT AI TOPIC:
+          {topic}
+
+          SOURCE:
+          {source}
+
+          Create a complete YouTube content package.
+
+          REQUIREMENTS:
+
+          1. Long-form video:
+          - 4 to 5 minutes spoken length.
+          - Strong first 10-second hook.
+          - Explain the news clearly.
+          - Explain why it matters.
+          - Explain practical use cases.
+          - Give examples.
+          - Avoid invented facts.
+          - End naturally with a TechMind subscribe CTA.
+
+          2. YouTube title:
+          - Attractive but truthful.
+          - Maximum 90 characters.
+
+          3. Description:
+          - 2 to 4 useful paragraphs.
+          - Include relevant hashtags at the end.
+          - No spam.
+
+          4. Tags:
+          - 8 to 15 relevant YouTube tags.
+
+          5. Short:
+          - 35 to 55 seconds.
+          - Strong hook.
+          - Summarize the most interesting part.
+          - End with a short CTA.
+
+          RETURN ONLY VALID JSON:
+
+          {{
+            "title": "...",
+            "description": "...",
+            "hashtags": ["#AI", "#ArtificialIntelligence"],
+            "tags": ["AI", "Artificial Intelligence"],
+            "long_script": "...",
+            "short_script": "..."
+          }}
+          """
+
+          # Gemini API endpoint
+          url = (
+              "https://generativelanguage.googleapis.com/v1beta/"
+              "models/gemini-3.8-flash:generateContent"
+          )
+
+          payload = {
+              "contents": [
+                  {
+                      "parts": [
+                          {"text": prompt}
+                      ]
+                  }
+              ]
+          }
+
+          last_error = None
+
+          for attempt in range(6):
+              try:
+                  response = requests.post(
+                      url,
+                      params={"key": api_key},
+                      json=payload,
+                      timeout=180
+                  )
+
+                  if response.status_code == 503:
+                      print(
+                          f"Gemini temporarily unavailable (503). "
+                          f"Retry {attempt + 1}/6..."
+                      )
+
+                      if attempt < 5:
+                          time.sleep(10 * (attempt + 1))
+                          continue
+
+                  response.raise_for_status()
+                  break
+
+              except requests.exceptions.RequestException as e:
+                  last_error = e
+
+                  if attempt == 5:
+                      raise
+
+                  print(
+                      f"Gemini request failed: {e}. "
+                      f"Retry {attempt + 1}/6..."
+                  )
+
+                  time.sleep(10 * (attempt + 1))
+
+          data = response.json()
+
+          text = data["candidates"][0]["content"]["parts"][0]["text"]
+          text = text.strip()
+
+          # Remove Markdown code fences if Gemini adds them
+          if text.startswith("```"):
+              lines = text.splitlines()
+
+              if lines and lines[0].strip().lower() in (
+                  "```json",
+                  "```"
+              ):
+                  lines = lines[1:]
+
+              if lines and lines[-1].strip() == "```":
+                  lines = lines[:-1]
+
+              text = "\n".join(lines).strip()
+
+          package = json.loads(text)
+
+          open(
+              "title.txt",
+              "w",
+              encoding="utf-8"
+          ).write(package["title"])
+
+          open(
+              "description.txt",
+              "w",
+              encoding="utf-8"
+          ).write(package["description"])
+
+          open(
+              "long_script.txt",
+              "w",
+              encoding="utf-8"
+          ).write(package["long_script"])
+
+          open(
+              "short_script.txt",
+              "w",
+              encoding="utf-8"
+          ).write(package["short_script"])
+
+          with open("tags.txt", "w", encoding="utf-8") as f:
+              f.write(",".join(package["tags"]))
+
+          with open("hashtags.txt", "w", encoding="utf-8") as f:
+              f.write(" ".join(package["hashtags"]))
+
+          print("CONTENT PACKAGE CREATED")
+          print("TITLE:", package["title"])
+          PY
       # =========================================================
       - name: Generate complete content package
         env:
