@@ -1,63 +1,4 @@
-name: Fully Automated AI YouTube
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "30 5 * * *"
-
-permissions:
-  contents: read
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-
-    steps:
-
       # =========================================================
-      # 1. INSTALL
-      # =========================================================
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
-          pip install requests feedparser pillow google-api-python-client google-auth google-auth-httplib2 edge-tts
-
-      # =========================================================
-      # 2. FIND FRESH AI TOPIC
-      # =========================================================
-      - name: Find AI topic
-        run: |
-          python - <<'PY'
-          import feedparser
-
-          url = (
-              "https://news.google.com/rss/search?"
-              "q=AI%20OR%20%22artificial%20intelligence%22%20when%3A1d"
-              "&hl=en-US&gl=US&ceid=US:en"
-          )
-
-          feed = feedparser.parse(url)
-
-          if not feed.entries:
-              raise SystemExit("No fresh AI topics found.")
-
-          entry = feed.entries[0]
-
-          title = entry.get("title", "").strip()
-          summary = entry.get("summary", "").strip()
-          link = entry.get("link", "").strip()
-
-          print("TOPIC:", title)
-
-          open("topic.txt", "w", encoding="utf-8").write(title)
-          open("source.txt", "w", encoding="utf-8").write(summary)
-          open("source_url.txt", "w", encoding="utf-8").write(link)
-          PY
-
-      # =========================================================
-            # =========================================================
-            # =========================================================
       # 3. GEMINI CREATES SCRIPT + TITLE + DESCRIPTION + TAGS
       # =========================================================
       - name: Generate complete content package
@@ -72,8 +13,15 @@ jobs:
 
           API_KEY = os.environ["GEMINI_API_KEY"]
 
-          topic = open("topic.txt", encoding="utf-8").read().strip()
-          source = open("source.txt", encoding="utf-8").read().strip()
+          topic = open(
+              "topic.txt",
+              encoding="utf-8"
+          ).read().strip()
+
+          source = open(
+              "source.txt",
+              encoding="utf-8"
+          ).read().strip()
 
           prompt = f"""
           You are the senior producer of a technology YouTube channel called TechMind.
@@ -86,18 +34,17 @@ jobs:
 
           Create a complete YouTube content package.
 
-          REQUIREMENTS:
-
           LONG-FORM VIDEO:
-          - Write a 4 to 5 minute YouTube tutorial/news script.
-          - Start with a very strong hook in the first 10 seconds.
+          - Write a 4 to 5 minute spoken YouTube script.
+          - Start with a powerful hook in the first 10 seconds.
           - Explain what happened.
           - Explain why it matters.
           - Explain how the technology works.
           - Give practical real-world examples.
           - Explain who can use it.
-          - Do not invent facts that are not supported by the source.
-          - Keep the language natural and easy to understand.
+          - Do not invent facts.
+          - Use only information supported by the source.
+          - Make the narration natural and engaging.
           - End with a short TechMind subscribe CTA.
 
           TITLE:
@@ -106,7 +53,7 @@ jobs:
           - Maximum 90 characters.
 
           DESCRIPTION:
-          - Write 2 to 4 useful paragraphs.
+          - 2 to 4 useful paragraphs.
           - Explain the video clearly.
           - Add relevant hashtags at the end.
           - No spam.
@@ -116,18 +63,18 @@ jobs:
 
           SHORT:
           - Write a 35 to 55 second YouTube Short script.
-          - Strong opening hook.
-          - Focus on the most interesting part of the topic.
-          - Easy and fast narration.
+          - Very strong opening hook.
+          - Focus on the most interesting part.
+          - Fast, natural narration.
           - End with a short CTA.
 
           IMPORTANT:
           Return ONLY valid JSON.
           Do not use Markdown.
-          Do not add ```json.
+          Do not use ```json.
           Do not add explanations outside the JSON.
 
-          JSON FORMAT:
+          RETURN THIS EXACT JSON STRUCTURE:
 
           {{
             "title": "YouTube title",
@@ -146,116 +93,173 @@ jobs:
           """
 
           # -----------------------------------------------------
-          # Gemini request
+          # MODELS
           # -----------------------------------------------------
-
-          url = (
-              "https://generativelanguage.googleapis.com/v1beta/"
-              "models/gemini-3.8-flash:generateContent"
-          )
-
-          payload = {
-              "contents": [
-                  {
-                      "parts": [
-                          {
-                              "text": prompt
-                          }
-                      ]
-                  }
-              ]
-          }
+          models = [
+              "gemini-3.8-flash",
+              "gemini-3.7-flash"
+          ]
 
           response = None
+          successful_model = None
 
-          for attempt in range(6):
+          # -----------------------------------------------------
+          # TRY PRIMARY MODEL THEN AUTOMATIC FALLBACK
+          # -----------------------------------------------------
+          for model in models:
 
-              print(
-                  f"Calling Gemini... attempt "
-                  f"{attempt + 1}/6"
+              print("")
+              print("========================================")
+              print("Trying Gemini model:", model)
+              print("========================================")
+
+              url = (
+                  "https://generativelanguage.googleapis.com/"
+                  "v1beta/models/"
+                  + model
+                  + ":generateContent"
               )
 
-              try:
+              payload = {
+                  "contents": [
+                      {
+                          "parts": [
+                              {
+                                  "text": prompt
+                              }
+                          ]
+                      }
+                  ]
+              }
 
-                  response = requests.post(
-                      url,
-                      params={
-                          "key": API_KEY
-                      },
-                      json=payload,
-                      timeout=180
-                  )
+              model_success = False
+
+              for attempt in range(3):
 
                   print(
-                      "Gemini HTTP status:",
-                      response.status_code
+                      f"Attempt {attempt + 1}/3 "
+                      f"for {model}"
                   )
 
-                  if response.status_code == 503:
+                  try:
 
-                      if attempt < 5:
+                      response = requests.post(
+                          url,
+                          headers={
+                              "x-goog-api-key": API_KEY,
+                              "Content-Type": "application/json"
+                          },
+                          json=payload,
+                          timeout=180
+                      )
+
+                      print(
+                          "Gemini HTTP status:",
+                          response.status_code
+                      )
+
+                      # -------------------------------------------------
+                      # TEMPORARY SERVER ERROR
+                      # -------------------------------------------------
+                      if response.status_code == 503:
+
+                          print(
+                              f"{model} is temporarily unavailable."
+                          )
+
+                          if attempt < 2:
+
+                              wait_time = 15 * (attempt + 1)
+
+                              print(
+                                  f"Waiting {wait_time} seconds..."
+                              )
+
+                              time.sleep(wait_time)
+                              continue
+
+                          print(
+                              f"{model} failed after 3 attempts."
+                          )
+
+                          break
+
+                      # -------------------------------------------------
+                      # OTHER HTTP ERROR
+                      # -------------------------------------------------
+                      response.raise_for_status()
+
+                      model_success = True
+                      successful_model = model
+
+                      print(
+                          "Gemini request successful using:",
+                          model
+                      )
+
+                      break
+
+                  except requests.exceptions.Timeout:
+
+                      print(
+                          f"{model} request timed out."
+                      )
+
+                      if attempt < 2:
+
                           wait_time = 15 * (attempt + 1)
 
                           print(
-                              f"Gemini is temporarily unavailable."
-                              f" Waiting {wait_time} seconds..."
+                              f"Retrying in {wait_time} seconds..."
                           )
 
                           time.sleep(wait_time)
-                          continue
 
                       else:
-                          response.raise_for_status()
 
-                  response.raise_for_status()
+                          print(
+                              f"{model} timed out after 3 attempts."
+                          )
 
+                  except requests.exceptions.RequestException as error:
+
+                      print(
+                          "Gemini request error:",
+                          error
+                      )
+
+                      if attempt < 2:
+
+                          wait_time = 15 * (attempt + 1)
+
+                          print(
+                              f"Retrying in {wait_time} seconds..."
+                          )
+
+                          time.sleep(wait_time)
+
+                      else:
+
+                          print(
+                              f"{model} failed after 3 attempts."
+                          )
+
+              if model_success:
                   break
 
-              except requests.exceptions.Timeout:
+          # -----------------------------------------------------
+          # NO MODEL WORKED
+          # -----------------------------------------------------
+          if not model_success:
 
-                  if attempt < 5:
-
-                      wait_time = 15 * (attempt + 1)
-
-                      print(
-                          f"Gemini timeout."
-                          f" Waiting {wait_time} seconds..."
-                      )
-
-                      time.sleep(wait_time)
-
-                  else:
-                      raise
-
-              except requests.exceptions.RequestException as error:
-
-                  print(
-                      "Gemini request error:",
-                      error
-                  )
-
-                  if attempt < 5:
-
-                      wait_time = 15 * (attempt + 1)
-
-                      print(
-                          f"Retrying in {wait_time} seconds..."
-                      )
-
-                      time.sleep(wait_time)
-
-                  else:
-                      raise
-
-          if response is None:
               raise RuntimeError(
-                  "Gemini did not return a response."
+                  "All Gemini models failed. "
+                  "Tried Gemini 3.8 Flash and Gemini 3.7 Flash."
               )
 
           # -----------------------------------------------------
-          # Read Gemini response
+          # READ RESPONSE
           # -----------------------------------------------------
-
           data = response.json()
 
           try:
@@ -267,19 +271,24 @@ jobs:
 
           except (KeyError, IndexError):
 
+              print("")
               print("Unexpected Gemini response:")
-              print(json.dumps(data, indent=2))
+              print(
+                  json.dumps(
+                      data,
+                      indent=2
+                  )
+              )
 
               raise RuntimeError(
-                  "Could not read Gemini generated content."
+                  "Could not read Gemini response."
               )
 
           text = text.strip()
 
           # -----------------------------------------------------
-          # Remove accidental Markdown fences
+          # REMOVE MARKDOWN CODE FENCES
           # -----------------------------------------------------
-
           if text.startswith("```"):
 
               lines = text.splitlines()
@@ -293,15 +302,15 @@ jobs:
               text = "\n".join(lines).strip()
 
           # -----------------------------------------------------
-          # Convert JSON
+          # PARSE JSON
           # -----------------------------------------------------
-
           try:
 
               package = json.loads(text)
 
           except json.JSONDecodeError:
 
+              print("")
               print("Gemini returned invalid JSON:")
               print(text)
 
@@ -310,9 +319,8 @@ jobs:
               )
 
           # -----------------------------------------------------
-          # Validate required fields
+          # VALIDATE JSON
           # -----------------------------------------------------
-
           required_fields = [
               "title",
               "description",
@@ -325,55 +333,80 @@ jobs:
           for field in required_fields:
 
               if field not in package:
+
                   raise RuntimeError(
                       f"Missing Gemini field: {field}"
                   )
 
           # -----------------------------------------------------
-          # Save files
+          # SAVE TITLE
           # -----------------------------------------------------
-
           with open(
               "title.txt",
               "w",
               encoding="utf-8"
           ) as f:
+
               f.write(
-                  str(package["title"]).strip()
+                  str(
+                      package["title"]
+                  ).strip()
               )
 
+          # -----------------------------------------------------
+          # SAVE DESCRIPTION
+          # -----------------------------------------------------
           with open(
               "description.txt",
               "w",
               encoding="utf-8"
           ) as f:
+
               f.write(
-                  str(package["description"]).strip()
+                  str(
+                      package["description"]
+                  ).strip()
               )
 
+          # -----------------------------------------------------
+          # SAVE LONG SCRIPT
+          # -----------------------------------------------------
           with open(
               "long_script.txt",
               "w",
               encoding="utf-8"
           ) as f:
+
               f.write(
-                  str(package["long_script"]).strip()
+                  str(
+                      package["long_script"]
+                  ).strip()
               )
 
+          # -----------------------------------------------------
+          # SAVE SHORT SCRIPT
+          # -----------------------------------------------------
           with open(
               "short_script.txt",
               "w",
               encoding="utf-8"
           ) as f:
+
               f.write(
-                  str(package["short_script"]).strip()
+                  str(
+                      package["short_script"]
+                  ).strip()
               )
 
+          # -----------------------------------------------------
+          # SAVE TAGS
+          # -----------------------------------------------------
           with open(
               "tags.txt",
               "w",
               encoding="utf-8"
           ) as f:
+
               f.write(
                   ",".join(
                       str(tag).strip()
@@ -381,11 +414,15 @@ jobs:
                   )
               )
 
+          # -----------------------------------------------------
+          # SAVE HASHTAGS
+          # -----------------------------------------------------
           with open(
               "hashtags.txt",
               "w",
               encoding="utf-8"
           ) as f:
+
               f.write(
                   " ".join(
                       str(tag).strip()
@@ -393,405 +430,27 @@ jobs:
                   )
               )
 
+          # -----------------------------------------------------
+          # SUCCESS
+          # -----------------------------------------------------
           print("")
           print("========================================")
           print("CONTENT PACKAGE CREATED SUCCESSFULLY")
           print("========================================")
+          print("MODEL USED:")
+          print(successful_model)
+          print("")
           print("TITLE:")
           print(package["title"])
           print("")
-          print("LONG SCRIPT CHARACTERS:")
-          print(len(package["long_script"]))
+          print(
+              "LONG SCRIPT CHARACTERS:",
+              len(package["long_script"])
+          )
           print("")
-          print("SHORT SCRIPT CHARACTERS:")
-          print(len(package["short_script"]))
+          print(
+              "SHORT SCRIPT CHARACTERS:",
+              len(package["short_script"])
+          )
           print("========================================")
-
-  
-      # 4. LONG-FORM VOICE
-      # =========================================================
-      - name: Generate long voice
-        run: |
-          edge-tts \
-            --voice en-US-GuyNeural \
-            --rate=-5% \
-            --text "$(cat long_script.txt)" \
-            --write-media long_voice.mp3
-
-      # =========================================================
-      # 5. SHORT VOICE
-      # =========================================================
-      - name: Generate short voice
-        run: |
-          edge-tts \
-            --voice en-US-GuyNeural \
-            --rate=-3% \
-            --text "$(cat short_script.txt)" \
-            --write-media short_voice.mp3
-
-      # =========================================================
-      # 6. GENERATE AI THUMBNAIL
-      # =========================================================
-      - name: Generate AI thumbnail
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python - <<'PY'
-          import requests
-          import base64
-          import os
-
-          api_key = os.environ["GEMINI_API_KEY"]
-          title = open("title.txt", encoding="utf-8").read().strip()
-
-          prompt = f"""
-          Create a professional YouTube thumbnail for a technology channel.
-
-          Video title:
-          {title}
-
-          Style:
-          - Extremely attractive modern technology thumbnail
-          - High contrast
-          - Futuristic AI theme
-          - Professional YouTube creator style
-          - One strong central visual
-          - Very little text
-          - Large readable words
-          - No fake logos
-          - No watermark-like text
-          - 16:9 composition
-          """
-
-          url = "https://generativelanguage.googleapis.com/v1beta/interactions"
-
-          payload = {
-              "model": "gemini-3.1-flash-image",
-              "input": prompt,
-              "response_format": {
-                  "type": "image",
-                  "mime_type": "image/jpeg",
-                  "aspect_ratio": "16:9",
-                  "image_size": "1K"
-              }
-          }
-
-          response = requests.post(
-              url,
-              headers={
-                  "x-goog-api-key": api_key,
-                  "Content-Type": "application/json"
-              },
-              json=payload,
-              timeout=180
-          )
-
-          response.raise_for_status()
-
-          data = response.json()
-
-          image_data = None
-
-          for step in data.get("steps", []):
-              for block in step.get("content", []):
-                  if block.get("type") == "image":
-                      image_data = block.get("data")
-                      break
-
-          if not image_data and "output_image" in data:
-              image_data = data["output_image"]["data"]
-
-          if not image_data:
-              raise RuntimeError("Gemini did not return an image.")
-
-          with open("thumbnail.jpg", "wb") as f:
-              f.write(base64.b64decode(image_data))
-
-          print("AI THUMBNAIL CREATED")
           PY
-
-      # =========================================================
-      # 7. CREATE LONG-FORM VISUAL SCENES
-      # =========================================================
-      - name: Create long-form visuals
-        run: |
-          cat > make_long_scenes.py <<'PY'
-          from PIL import Image, ImageDraw, ImageFont
-          import os
-
-          W, H = 1920, 1080
-          os.makedirs("long_scenes", exist_ok=True)
-
-          title = open("title.txt", encoding="utf-8").read().strip()
-
-          try:
-              big = ImageFont.truetype(
-                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 82
-              )
-              small = ImageFont.truetype(
-                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 46
-              )
-          except:
-              big = small = ImageFont.load_default()
-
-          scenes = [
-              ("LATEST AI UPDATE", title[:70]),
-              ("WHAT HAPPENED?", "The latest AI development explained"),
-              ("WHY IT MATTERS", "What this means for the future"),
-              ("HOW IT WORKS", "The technology behind the update"),
-              ("REAL WORLD USE", "Practical examples"),
-              ("WHAT CHANGES NOW?", "What users should know"),
-              ("THE BIGGER PICTURE", "Where AI is heading"),
-              ("TECHMIND", "Follow for practical AI tutorials"),
-          ]
-
-          for i, (a, b) in enumerate(scenes):
-              img = Image.new("RGB", (W, H), (8, 14, 30))
-              d = ImageDraw.Draw(img)
-
-              for j in range(18):
-                  x = 80 + ((j * 311 + i * 157) % 1760)
-                  y = 80 + ((j * 197 + i * 113) % 850)
-                  r = 18 + (j % 5) * 8
-                  d.ellipse(
-                      (x-r, y-r, x+r, y+r),
-                      outline=(50, 120, 255),
-                      width=4
-                  )
-
-              d.rounded_rectangle(
-                  (140, 250, 1780, 820),
-                  radius=40,
-                  fill=(17, 27, 52),
-                  outline=(75, 135, 255),
-                  width=4
-              )
-
-              d.text(
-                  (W//2, 430),
-                  a,
-                  font=big,
-                  anchor="mm",
-                  fill="white"
-              )
-
-              d.text(
-                  (W//2, 585),
-                  b,
-                  font=small,
-                  anchor="mm",
-                  fill=(190, 210, 240)
-              )
-
-              d.text(
-                  (150, 910),
-                  "TECHMIND • AI NEWS & TUTORIAL",
-                  font=small,
-                  fill=(140, 165, 205)
-              )
-
-              img.save(f"long_scenes/scene_{i:02d}.png")
-          PY
-
-          python make_long_scenes.py
-
-      # =========================================================
-      # 8. LONG-FORM VIDEO
-      # =========================================================
-      - name: Create long-form video
-        run: |
-          ffmpeg -y \
-            -loop 1 -i long_scenes/scene_00.png \
-            -loop 1 -i long_scenes/scene_01.png \
-            -loop 1 -i long_scenes/scene_02.png \
-            -loop 1 -i long_scenes/scene_03.png \
-            -loop 1 -i long_scenes/scene_04.png \
-            -loop 1 -i long_scenes/scene_05.png \
-            -loop 1 -i long_scenes/scene_06.png \
-            -loop 1 -i long_scenes/scene_07.png \
-            -i long_voice.mp3 \
-            -filter_complex "
-              [0:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v0];
-              [1:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v1];
-              [2:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v2];
-              [3:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v3];
-              [4:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v4];
-              [5:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v5];
-              [6:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v6];
-              [7:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v7];
-              [v0][v1][v2][v3][v4][v5][v6][v7]concat=n=8:v=1:a=0[v]
-            " \
-            -map "[v]" \
-            -map 8:a \
-            -c:v libx264 \
-            -preset veryfast \
-            -pix_fmt yuv420p \
-            -c:a aac \
-            -shortest \
-            long_video.mp4
-
-      # =========================================================
-      # 9. CREATE SHORT VISUAL
-      # =========================================================
-      - name: Create Short
-        run: |
-          ffmpeg -y \
-            -loop 1 -i long_scenes/scene_00.png \
-            -loop 1 -i long_scenes/scene_01.png \
-            -loop 1 -i long_scenes/scene_02.png \
-            -loop 1 -i long_scenes/scene_03.png \
-            -i short_voice.mp3 \
-            -filter_complex "
-              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.001,1.08)':d=300:s=1080x1920:fps=30[v0];
-              [1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.001,1.08)':d=300:s=1080x1920:fps=30[v1];
-              [2:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.001,1.08)':d=300:s=1080x1920:fps=30[v2];
-              [3:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.001,1.08)':d=300:s=1080x1920:fps=30[v3];
-              [v0][v1][v2][v3]concat=n=4:v=1:a=0[v]
-            " \
-            -map "[v]" \
-            -map 4:a \
-            -c:v libx264 \
-            -preset veryfast \
-            -pix_fmt yuv420p \
-            -c:a aac \
-            -shortest \
-            short.mp4
-
-      # =========================================================
-      # 10. YOUTUBE CREDENTIALS
-      # =========================================================
-      - name: Prepare YouTube credentials
-        env:
-          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-        run: |
-          printf '%s' "$YOUTUBE_TOKEN_JSON" > youtube_token.json
-
-      # =========================================================
-      # 11. UPLOAD LONG VIDEO + THUMBNAIL
-      # =========================================================
-      - name: Upload long video
-        run: |
-          python - <<'PY'
-          from google.oauth2.credentials import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
-
-          title = open("title.txt", encoding="utf-8").read().strip()
-          description = open("description.txt", encoding="utf-8").read().strip()
-          tags = [
-              x.strip()
-              for x in open("tags.txt", encoding="utf-8").read().split(",")
-              if x.strip()
-          ]
-
-          creds = Credentials.from_authorized_user_file(
-              "youtube_token.json",
-              ["https://www.googleapis.com/auth/youtube.upload"]
-          )
-
-          youtube = build("youtube", "v3", credentials=creds)
-
-          request = youtube.videos().insert(
-              part="snippet,status",
-              body={
-                  "snippet": {
-                      "title": title,
-                      "description": description,
-                      "tags": tags,
-                      "categoryId": "28"
-                  },
-                  "status": {
-                      "privacyStatus": "public"
-                  }
-              },
-              media_body=MediaFileUpload(
-                  "long_video.mp4",
-                  mimetype="video/mp4",
-                  resumable=True
-              )
-          )
-
-          response = request.execute()
-
-          video_id = response["id"]
-
-          print("LONG VIDEO UPLOADED:", video_id)
-
-          thumb = youtube.thumbnails().set(
-              videoId=video_id,
-              media_body=MediaFileUpload(
-                  "thumbnail.jpg",
-                  mimetype="image/jpeg"
-              )
-          )
-
-          thumb.execute()
-
-          print("LONG VIDEO THUMBNAIL SET")
-          PY
-
-      # =========================================================
-      # 12. UPLOAD SHORT
-      # =========================================================
-      - name: Upload Short
-        run: |
-          python - <<'PY'
-          from google.oauth2.credentials import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
-
-          title = open("title.txt", encoding="utf-8").read().strip()
-
-          short_title = title[:75] + " #Shorts"
-
-          description = (
-              open("description.txt", encoding="utf-8").read()
-              + "\n\n#Shorts #AI #ArtificialIntelligence #TechMind"
-          )
-
-          creds = Credentials.from_authorized_user_file(
-              "youtube_token.json",
-              ["https://www.googleapis.com/auth/youtube.upload"]
-          )
-
-          youtube = build("youtube", "v3", credentials=creds)
-
-          request = youtube.videos().insert(
-              part="snippet,status",
-              body={
-                  "snippet": {
-                      "title": short_title,
-                      "description": description,
-                      "tags": [
-                          "AI",
-                          "Artificial Intelligence",
-                          "AI News",
-                          "AI Shorts",
-                          "TechMind",
-                          "Shorts"
-                      ],
-                      "categoryId": "28"
-                  },
-                  "status": {
-                      "privacyStatus": "public"
-                  }
-              },
-              media_body=MediaFileUpload(
-                  "short.mp4",
-                  mimetype="video/mp4",
-                  resumable=True
-              )
-          )
-
-          response = request.execute()
-
-          print("SHORT UPLOADED:", response["id"])
-          PY
-
-      # =========================================================
-      # 13. CLEANUP
-      # =========================================================
-      - name: Cleanup secrets
-        if: always()
-        run: |
-          rm -f youtube_token.json
