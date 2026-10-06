@@ -1,0 +1,307 @@
+name: Fully Automated AI YouTube
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 5 * * *"
+
+jobs:
+  ai-youtube:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          pip install google-api-python-client google-auth google-auth-httplib2 edge-tts pillow requests feedparser
+
+      - name: Find latest AI topic
+        run: |
+          python - <<'PY'
+          import feedparser
+
+          url = "https://news.google.com/rss/search?q=AI%20OR%20%22artificial%20intelligence%22%20when%3A1d&hl=en-US&gl=US&ceid=US:en"
+          feed = feedparser.parse(url)
+
+          if not feed.entries:
+              raise SystemExit("No recent AI topics found.")
+
+          entry = feed.entries[0]
+
+          title = entry.get("title", "Latest AI News")
+          summary = entry.get("summary", "")
+          link = entry.get("link", "")
+
+          print("Selected topic:", title)
+
+          with open("topic.txt", "w", encoding="utf-8") as f:
+              f.write(title)
+
+          with open("source.txt", "w", encoding="utf-8") as f:
+              f.write(summary)
+
+          with open("source_url.txt", "w", encoding="utf-8") as f:
+              f.write(link)
+          PY
+
+      - name: Generate AI script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import requests
+          import os
+
+          topic = open("topic.txt", encoding="utf-8").read().strip()
+          source = open("source.txt", encoding="utf-8").read().strip()
+
+          prompt = f"""
+          You are a professional YouTube technology scriptwriter.
+
+          Create a useful and engaging YouTube tutorial based on this current AI topic:
+
+          TOPIC:
+          {topic}
+
+          SOURCE INFORMATION:
+          {source}
+
+          Requirements:
+          - Around 4 to 5 minutes when spoken.
+          - Simple English.
+          - Strong opening hook.
+          - Explain what happened.
+          - Explain why it matters.
+          - Explain practical uses for normal people.
+          - Include useful examples.
+          - Do not invent facts.
+          - Avoid unsupported claims.
+          - End with a natural YouTube subscribe call-to-action.
+          - Return ONLY the spoken script.
+          """
+
+          url = (
+              "https://generativelanguage.googleapis.com/v1beta/"
+              "models/gemini-2.5-flash:generateContent"
+              "?key=" + os.environ["GEMINI_API_KEY"]
+          )
+
+          response = requests.post(
+              url,
+              json={
+                  "contents": [
+                      {
+                          "parts": [
+                              {"text": prompt}
+                          ]
+                      }
+                  ]
+              },
+              timeout=60
+          )
+
+          response.raise_for_status()
+
+          data = response.json()
+          script = data["candidates"][0]["content"]["parts"][0]["text"]
+
+          with open("script.txt", "w", encoding="utf-8") as f:
+              f.write(script)
+
+          print(script)
+          PY
+
+      - name: Generate voice
+        run: |
+          edge-tts \
+            --voice en-US-GuyNeural \
+            --rate=-5% \
+            --text "$(cat script.txt)" \
+            --write-media voice.mp3
+
+      - name: Create visual scenes
+        run: |
+          cat > make_scenes.py <<'PY'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
+
+          W, H = 1920, 1080
+          os.makedirs("scenes", exist_ok=True)
+
+          try:
+              title_font = ImageFont.truetype(
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 82
+              )
+              text_font = ImageFont.truetype(
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 48
+              )
+          except:
+              title_font = text_font = ImageFont.load_default()
+
+          topic = open("topic.txt", encoding="utf-8").read().strip()
+
+          scenes = [
+              ("LATEST AI UPDATE", topic),
+              ("WHAT HAPPENED?", "Understanding the latest development"),
+              ("WHY DOES IT MATTER?", "What this means for users"),
+              ("HOW CAN YOU USE IT?", "Practical AI applications"),
+              ("REAL WORLD EXAMPLES", "Simple examples you can try"),
+              ("THE BIGGER PICTURE", "Where AI is heading"),
+              ("WHAT SHOULD YOU DO?", "Start experimenting and learning"),
+              ("TECHMIND", "More practical AI tutorials coming soon"),
+          ]
+
+          for i, (title, subtitle) in enumerate(scenes):
+              img = Image.new("RGB", (W, H), (12, 18, 35))
+              d = ImageDraw.Draw(img)
+
+              for j in range(15):
+                  x = 100 + ((j * 317 + i * 173) % 1720)
+                  y = 100 + ((j * 191 + i * 107) % 820)
+                  r = 20 + ((j * 13) % 45)
+                  d.ellipse(
+                      (x-r, y-r, x+r, y+r),
+                      outline=(55, 120, 255),
+                      width=5
+                  )
+
+              d.rounded_rectangle(
+                  (150, 270, 1770, 810),
+                  radius=45,
+                  fill=(18, 27, 52),
+                  outline=(70, 130, 255),
+                  width=4
+              )
+
+              d.text(
+                  (W//2, 430),
+                  title,
+                  font=title_font,
+                  anchor="mm",
+                  fill="white"
+              )
+
+              d.text(
+                  (W//2, 585),
+                  subtitle[:75],
+                  font=text_font,
+                  anchor="mm",
+                  fill=(190, 210, 240)
+              )
+
+              d.text(
+                  (170, 900),
+                  "TECHMIND • AI NEWS & TUTORIAL",
+                  font=text_font,
+                  fill=(140, 165, 205)
+              )
+
+              img.save(f"scenes/scene_{i:02d}.png")
+          PY
+
+          python make_scenes.py
+
+      - name: Create video
+        run: |
+          ffmpeg -y \
+            -loop 1 -i scenes/scene_00.png \
+            -loop 1 -i scenes/scene_01.png \
+            -loop 1 -i scenes/scene_02.png \
+            -loop 1 -i scenes/scene_03.png \
+            -loop 1 -i scenes/scene_04.png \
+            -loop 1 -i scenes/scene_05.png \
+            -loop 1 -i scenes/scene_06.png \
+            -loop 1 -i scenes/scene_07.png \
+            -i voice.mp3 \
+            -filter_complex "
+              [0:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v0];
+              [1:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v1];
+              [2:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v2];
+              [3:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v3];
+              [4:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v4];
+              [5:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v5];
+              [6:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v6];
+              [7:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v7];
+              [v0][v1][v2][v3][v4][v5][v6][v7]concat=n=8:v=1:a=0[v]
+            " \
+            -map "[v]" \
+            -map 8:a \
+            -c:v libx264 \
+            -preset veryfast \
+            -pix_fmt yuv420p \
+            -c:a aac \
+            -shortest \
+            tutorial.mp4
+
+      - name: Prepare YouTube credentials
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+        run: |
+          printf '%s' "$YOUTUBE_TOKEN_JSON" > youtube_token.json
+
+      - name: Upload to YouTube
+        run: |
+          python - <<'PY'
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          topic = open("topic.txt", encoding="utf-8").read().strip()
+          source_url = open("source_url.txt", encoding="utf-8").read().strip()
+
+          creds = Credentials.from_authorized_user_file(
+              "youtube_token.json",
+              ["https://www.googleapis.com/auth/youtube.upload"]
+          )
+
+          youtube = build("youtube", "v3", credentials=creds)
+
+          title = "AI Update: " + topic[:85]
+
+          description = f"""Today's AI update explained simply.
+
+          Topic:
+          {topic}
+
+          Source:
+          {source_url}
+
+          Subscribe to TechMind for practical AI tutorials, AI tools,
+          automation ideas and technology explained simply.
+          """
+
+          request = youtube.videos().insert(
+              part="snippet,status",
+              body={
+                  "snippet": {
+                      "title": title,
+                      "description": description,
+                      "tags": [
+                          "AI",
+                          "Artificial Intelligence",
+                          "AI News",
+                          "AI Tools",
+                          "AI Tutorial",
+                          "Automation",
+                          "TechMind"
+                      ],
+                      "categoryId": "28"
+                  },
+                  "status": {
+                      "privacyStatus": "public"
+                  }
+              },
+              media_body=MediaFileUpload(
+                  "tutorial.mp4",
+                  mimetype="video/mp4",
+                  resumable=True
+              )
+          )
+
+          response = request.execute()
+
+          print("AUTOMATIC UPLOAD SUCCESS")
+          print("Video ID:", response["id"])
+          print("https://www.youtube.com/watch?v=" + response["id"])
+          PY
