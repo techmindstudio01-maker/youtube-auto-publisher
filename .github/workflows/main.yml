@@ -1,16 +1,79 @@
-name: Automation Test
+name: YouTube Upload Test
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 13 * * *"
 
 jobs:
-  test:
+  upload-test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test
+      - name: Install tools
         run: |
-          echo "AUTOMATION IS WORKING"
-          date
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+
+      - name: Install YouTube libraries
+        run: |
+          pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Create test video
+        run: |
+          ffmpeg -y \
+            -f lavfi -i color=c=black:s=1080x1920:d=5 \
+            -vf "drawtext=text='GitHub Auto Upload Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" \
+            -c:v libx264 \
+            -pix_fmt yuv420p \
+            test_video.mp4
+
+      - name: Upload to YouTube
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          with open("youtube_token.json", "w") as f:
+              f.write(os.environ["YOUTUBE_TOKEN_JSON"])
+
+          print("YouTube credential file created.")
+          PY
+
+          python - <<'PY'
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          creds = Credentials.from_authorized_user_file(
+              "youtube_token.json",
+              ["https://www.googleapis.com/auth/youtube.upload"]
+          )
+
+          youtube = build("youtube", "v3", credentials=creds)
+
+          request = youtube.videos().insert(
+              part="snippet,status",
+              body={
+                  "snippet": {
+                      "title": "GitHub Auto Upload Test",
+                      "description": "Test upload from GitHub Actions.",
+                      "categoryId": "22"
+                  },
+                  "status": {
+                      "privacyStatus": "private"
+                  }
+              },
+              media_body=MediaFileUpload(
+                  "test_video.mp4",
+                  mimetype="video/mp4",
+                  resumable=True
+              )
+          )
+
+          response = request.execute()
+
+          print("UPLOAD SUCCESS")
+          print("Video ID:", response["id"])
+          print("https://www.youtube.com/watch?v=" + response["id"])
+          PY
