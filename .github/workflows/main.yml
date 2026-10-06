@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  tutorial-test:
+  tutorial:
     runs-on: ubuntu-latest
 
     steps:
@@ -12,47 +12,152 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip
-          pip install google-api-python-client google-auth google-auth-httplib2 edge-tts
+          pip install google-api-python-client google-auth google-auth-httplib2 edge-tts pillow
 
-      - name: Create AI tutorial script
+      - name: Create tutorial script
         run: |
           cat > script.txt <<'EOF'
-          Welcome to TechMind.
+          Artificial intelligence is changing the way we work, learn, create, and build businesses.
 
-          In this video, we are going to explore five powerful ways artificial intelligence can save your time and make everyday work easier.
+          But most people are still using AI only for simple questions. In this tutorial, we will look at five powerful ways you can actually use AI to save time and become more productive.
 
-          First, AI can help you write faster. You can use an AI assistant to create emails, summaries, ideas, outlines, and first drafts in seconds.
+          Number one: AI can become your personal research assistant.
 
-          Second, AI can help you learn new skills. Instead of searching through hundreds of pages, you can ask an AI assistant to explain a difficult topic step by step and give you practical examples.
+          Instead of opening dozens of websites and spending hours collecting information, you can give an AI assistant a clear question and ask it to organize the information into simple points. You can ask for comparisons, summaries, examples, advantages, disadvantages, and even a step-by-step explanation.
 
-          Third, AI can help with coding. You can describe what you want to build, ask for code examples, and use AI to find errors and explain complicated programming concepts.
+          The important part is to give context. Tell the AI what you are trying to achieve, who the information is for, and what kind of answer you need. The better your instructions, the more useful the result becomes.
 
-          Fourth, AI can help create content. You can generate ideas, scripts, captions, thumbnails concepts, and video plans much faster than doing everything manually.
+          Number two: AI can help you create content much faster.
 
-          Fifth, AI can automate repetitive tasks. With the right tools, AI can connect different services and perform routine work automatically.
+          If you are a YouTuber, Instagram creator, student, or business owner, AI can help generate ideas, video outlines, scripts, captions, titles, descriptions, and thumbnail concepts.
 
-          The most important thing is not simply using AI. The real advantage comes from learning how to give clear instructions, checking the results, and building a repeatable workflow.
+          Instead of starting with a completely blank page, you can use AI to create a first version and then improve it with your own ideas and experience.
 
-          Artificial intelligence is becoming one of the most useful tools for creators, students, developers, and businesses.
+          Number three: AI can help you learn almost anything.
 
-          If you want more practical AI tutorials, subscribe to TechMind and stay tuned for the next video.
+          Imagine having a personal tutor available whenever you need one. You can ask AI to explain a difficult concept like you are a beginner. Then ask it for examples, practical exercises, quizzes, and a simpler explanation.
+
+          This makes learning much more interactive than simply reading a long article.
+
+          Number four: AI can help developers and technical users.
+
+          AI can explain code, find bugs, create small programs, convert code from one language to another, and help you understand error messages.
+
+          But remember, never blindly copy code from an AI. Always test it, understand what it does, and protect passwords, API keys, and other private information.
+
+          Number five: AI can automate repetitive work.
+
+          This is where things become really powerful.
+
+          AI can be connected with automation tools so that information can move between different services automatically. For example, a workflow could collect information, create a summary, generate content, save the result, and publish it without doing every step manually.
+
+          The biggest advantage of AI is not simply asking it questions.
+
+          The real advantage is building a repeatable system around it.
+
+          Start with one task that you perform repeatedly. Use AI to make that task faster. Then connect the next step. Over time, small improvements can become a complete automated workflow.
+
+          Artificial intelligence is moving very quickly, and new tools are appearing every week. The people who learn how to use these tools effectively can save enormous amounts of time.
+
+          So start small, experiment, check the results, and keep improving your workflow.
+
+          If you want practical AI tutorials, useful AI tools, automation ideas, and new technology explained simply, subscribe to TechMind.
+
+          More AI tutorials are coming soon.
           EOF
 
-      - name: Generate AI voice
+      - name: Generate voice
         run: |
           edge-tts \
             --voice en-US-GuyNeural \
-            --rate "+5%" \
+            --rate "-5%" \
             --text "$(cat script.txt)" \
             --write-media voice.mp3
 
-      - name: Create 16 by 9 tutorial video
+      - name: Create animated visual scenes
+        run: |
+          cat > make_scenes.py <<'PY'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
+
+          W, H = 1920, 1080
+          os.makedirs("scenes", exist_ok=True)
+
+          try:
+              title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 92)
+              big_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 70)
+              text_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 48)
+          except:
+              title_font = big_font = text_font = ImageFont.load_default()
+
+          scenes = [
+              ("AI IS CHANGING EVERYTHING", "5 powerful ways to use AI", "01"),
+              ("AI AS YOUR RESEARCH ASSISTANT", "Research • Summaries • Comparisons", "02"),
+              ("CREATE CONTENT FASTER", "Ideas • Scripts • Captions • Titles", "03"),
+              ("LEARN WITH A PERSONAL AI TUTOR", "Explanations • Examples • Quizzes", "04"),
+              ("AI FOR CODING", "Code • Debugging • Automation", "05"),
+              ("AUTOMATE REPETITIVE WORK", "Connect tools • Save time • Scale", "06"),
+              ("BUILD YOUR AI WORKFLOW", "Start small → automate → improve", "07"),
+              ("THE FUTURE IS AI-POWERED", "Learn it. Use it. Build with it.", "08"),
+          ]
+
+          for i, (title, subtitle, number) in enumerate(scenes):
+              img = Image.new("RGB", (W, H), (12, 18, 35))
+              d = ImageDraw.Draw(img)
+
+              # abstract AI-style glowing circles
+              for j in range(12):
+                  x = 150 + ((j * 317 + i * 173) % 1650)
+                  y = 120 + ((j * 191 + i * 107) % 780)
+                  r = 25 + ((j * 13) % 45)
+                  d.ellipse((x-r, y-r, x+r, y+r), outline=(55, 120, 255), width=5)
+
+              # connected lines
+              points = [(250,220),(600,380),(980,190),(1350,420),(1650,230),(1450,800),(900,700),(450,820)]
+              for a,b in zip(points, points[1:]):
+                  d.line((a[0],a[1],b[0],b[1]), fill=(45,90,170), width=5)
+
+              d.rounded_rectangle((180, 300, 1740, 780), radius=45,
+                                  fill=(18, 27, 52), outline=(70, 130, 255), width=4)
+
+              d.text((W//2, 410), title, font=title_font, anchor="mm", fill="white")
+              d.text((W//2, 555), subtitle, font=text_font, anchor="mm", fill=(190,210,240))
+
+              d.text((250, 850), f"TECHMIND  •  AI TUTORIAL", font=text_font, fill=(140,165,205))
+              d.text((1640, 850), number, font=big_font, anchor="mm", fill=(80,150,255))
+
+              img.save(f"scenes/scene_{i:02d}.png")
+
+          PY
+
+          python make_scenes.py
+
+      - name: Create animated video
         run: |
           ffmpeg -y \
-            -f lavfi -i "color=c=0x111827:s=1920x1080:r=30" \
+            -loop 1 -i scenes/scene_00.png \
+            -loop 1 -i scenes/scene_01.png \
+            -loop 1 -i scenes/scene_02.png \
+            -loop 1 -i scenes/scene_03.png \
+            -loop 1 -i scenes/scene_04.png \
+            -loop 1 -i scenes/scene_05.png \
+            -loop 1 -i scenes/scene_06.png \
+            -loop 1 -i scenes/scene_07.png \
             -i voice.mp3 \
+            -filter_complex "
+              [0:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v0];
+              [1:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v1];
+              [2:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v2];
+              [3:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v3];
+              [4:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v4];
+              [5:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v5];
+              [6:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v6];
+              [7:v]zoompan=z='min(zoom+0.0005,1.08)':d=450:s=1920x1080:fps=30[v7];
+              [v0][v1][v2][v3][v4][v5][v6][v7]concat=n=8:v=1:a=0[v]
+            " \
+            -map "[v]" \
+            -map 8:a \
             -t 270 \
-            -vf "drawtext=text='5 POWERFUL AI USES':fontcolor=white:fontsize=82:x=(w-text_w)/2:y=360,drawtext=text='TechMind AI Tutorial':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=500" \
             -c:v libx264 \
             -preset veryfast \
             -pix_fmt yuv420p \
@@ -66,7 +171,7 @@ jobs:
         run: |
           printf '%s' "$YOUTUBE_TOKEN_JSON" > youtube_token.json
 
-      - name: Upload tutorial to YouTube
+      - name: Upload tutorial
         run: |
           python - <<'PY'
           from google.oauth2.credentials import Credentials
@@ -84,15 +189,9 @@ jobs:
               part="snippet,status",
               body={
                   "snippet": {
-                      "title": "5 Powerful AI Uses You Should Know",
-                      "description": "Discover five practical ways artificial intelligence can save time and improve your workflow. More AI tutorials coming soon.",
-                      "tags": [
-                          "AI",
-                          "Artificial Intelligence",
-                          "AI Tools",
-                          "AI Tutorial",
-                          "TechMind"
-                      ],
+                      "title": "5 Powerful Ways to Use AI in 2026",
+                      "description": "Discover five practical ways artificial intelligence can save time, improve productivity, create content, support learning, help with coding, and automate repetitive work.",
+                      "tags": ["AI","Artificial Intelligence","AI Tools","AI Tutorial","Automation","TechMind"],
                       "categoryId": "28"
                   },
                   "status": {
@@ -107,8 +206,6 @@ jobs:
           )
 
           response = request.execute()
-
           print("TUTORIAL UPLOAD SUCCESS")
           print("Video ID:", response["id"])
-          print("https://www.youtube.com/watch?v=" + response["id"])
           PY
