@@ -57,6 +57,7 @@ jobs:
 
       # =========================================================
             # =========================================================
+            # =========================================================
       # 3. GEMINI CREATES SCRIPT + TITLE + DESCRIPTION + TAGS
       # =========================================================
       - name: Generate complete content package
@@ -69,10 +70,10 @@ jobs:
           import os
           import time
 
-          api_key = os.environ["GEMINI_API_KEY"]
+          API_KEY = os.environ["GEMINI_API_KEY"]
 
-          topic = open("topic.txt", encoding="utf-8").read()
-          source = open("source.txt", encoding="utf-8").read()
+          topic = open("topic.txt", encoding="utf-8").read().strip()
+          source = open("source.txt", encoding="utf-8").read().strip()
 
           prompt = f"""
           You are the senior producer of a technology YouTube channel called TechMind.
@@ -87,47 +88,67 @@ jobs:
 
           REQUIREMENTS:
 
-          1. Long-form video:
-          - 4 to 5 minutes spoken length.
-          - Strong first 10-second hook.
-          - Explain the news clearly.
+          LONG-FORM VIDEO:
+          - Write a 4 to 5 minute YouTube tutorial/news script.
+          - Start with a very strong hook in the first 10 seconds.
+          - Explain what happened.
           - Explain why it matters.
-          - Explain practical use cases.
-          - Give examples.
-          - Avoid invented facts.
-          - End naturally with a TechMind subscribe CTA.
+          - Explain how the technology works.
+          - Give practical real-world examples.
+          - Explain who can use it.
+          - Do not invent facts that are not supported by the source.
+          - Keep the language natural and easy to understand.
+          - End with a short TechMind subscribe CTA.
 
-          2. YouTube title:
-          - Attractive but truthful.
+          TITLE:
+          - Attractive and clickable.
+          - Truthful.
           - Maximum 90 characters.
 
-          3. Description:
-          - 2 to 4 useful paragraphs.
-          - Include relevant hashtags at the end.
+          DESCRIPTION:
+          - Write 2 to 4 useful paragraphs.
+          - Explain the video clearly.
+          - Add relevant hashtags at the end.
           - No spam.
 
-          4. Tags:
-          - 8 to 15 relevant YouTube tags.
+          TAGS:
+          - Generate 8 to 15 relevant YouTube tags.
 
-          5. Short:
-          - 35 to 55 seconds.
-          - Strong hook.
-          - Summarize the most interesting part.
+          SHORT:
+          - Write a 35 to 55 second YouTube Short script.
+          - Strong opening hook.
+          - Focus on the most interesting part of the topic.
+          - Easy and fast narration.
           - End with a short CTA.
 
-          RETURN ONLY VALID JSON:
+          IMPORTANT:
+          Return ONLY valid JSON.
+          Do not use Markdown.
+          Do not add ```json.
+          Do not add explanations outside the JSON.
+
+          JSON FORMAT:
 
           {{
-            "title": "...",
-            "description": "...",
-            "hashtags": ["#AI", "#ArtificialIntelligence"],
-            "tags": ["AI", "Artificial Intelligence"],
-            "long_script": "...",
-            "short_script": "..."
+            "title": "YouTube title",
+            "description": "YouTube description",
+            "hashtags": [
+              "#AI",
+              "#ArtificialIntelligence"
+            ],
+            "tags": [
+              "AI",
+              "Artificial Intelligence"
+            ],
+            "long_script": "Full long-form script",
+            "short_script": "Full Short script"
           }}
           """
 
-          # Gemini API endpoint
+          # -----------------------------------------------------
+          # Gemini request
+          # -----------------------------------------------------
+
           url = (
               "https://generativelanguage.googleapis.com/v1beta/"
               "models/gemini-3.8-flash:generateContent"
@@ -137,62 +158,133 @@ jobs:
               "contents": [
                   {
                       "parts": [
-                          {"text": prompt}
+                          {
+                              "text": prompt
+                          }
                       ]
                   }
               ]
           }
 
-          last_error = None
+          response = None
 
           for attempt in range(6):
+
+              print(
+                  f"Calling Gemini... attempt "
+                  f"{attempt + 1}/6"
+              )
+
               try:
+
                   response = requests.post(
                       url,
-                      params={"key": api_key},
+                      params={
+                          "key": API_KEY
+                      },
                       json=payload,
                       timeout=180
                   )
 
-                  if response.status_code == 503:
-                      print(
-                          f"Gemini temporarily unavailable (503). "
-                          f"Retry {attempt + 1}/6..."
-                      )
-
-                      if attempt < 5:
-                          time.sleep(10 * (attempt + 1))
-                          continue
-
-                  response.raise_for_status()
-                  break
-
-              except requests.exceptions.RequestException as e:
-                  last_error = e
-
-                  if attempt == 5:
-                      raise
-
                   print(
-                      f"Gemini request failed: {e}. "
-                      f"Retry {attempt + 1}/6..."
+                      "Gemini HTTP status:",
+                      response.status_code
                   )
 
-                  time.sleep(10 * (attempt + 1))
+                  if response.status_code == 503:
+
+                      if attempt < 5:
+                          wait_time = 15 * (attempt + 1)
+
+                          print(
+                              f"Gemini is temporarily unavailable."
+                              f" Waiting {wait_time} seconds..."
+                          )
+
+                          time.sleep(wait_time)
+                          continue
+
+                      else:
+                          response.raise_for_status()
+
+                  response.raise_for_status()
+
+                  break
+
+              except requests.exceptions.Timeout:
+
+                  if attempt < 5:
+
+                      wait_time = 15 * (attempt + 1)
+
+                      print(
+                          f"Gemini timeout."
+                          f" Waiting {wait_time} seconds..."
+                      )
+
+                      time.sleep(wait_time)
+
+                  else:
+                      raise
+
+              except requests.exceptions.RequestException as error:
+
+                  print(
+                      "Gemini request error:",
+                      error
+                  )
+
+                  if attempt < 5:
+
+                      wait_time = 15 * (attempt + 1)
+
+                      print(
+                          f"Retrying in {wait_time} seconds..."
+                      )
+
+                      time.sleep(wait_time)
+
+                  else:
+                      raise
+
+          if response is None:
+              raise RuntimeError(
+                  "Gemini did not return a response."
+              )
+
+          # -----------------------------------------------------
+          # Read Gemini response
+          # -----------------------------------------------------
 
           data = response.json()
 
-          text = data["candidates"][0]["content"]["parts"][0]["text"]
+          try:
+
+              text = (
+                  data["candidates"][0]
+                  ["content"]["parts"][0]["text"]
+              )
+
+          except (KeyError, IndexError):
+
+              print("Unexpected Gemini response:")
+              print(json.dumps(data, indent=2))
+
+              raise RuntimeError(
+                  "Could not read Gemini generated content."
+              )
+
           text = text.strip()
 
-          # Remove Markdown code fences if Gemini adds them
+          # -----------------------------------------------------
+          # Remove accidental Markdown fences
+          # -----------------------------------------------------
+
           if text.startswith("```"):
+
               lines = text.splitlines()
 
-              if lines and lines[0].strip().lower() in (
-                  "```json",
-                  "```"
-              ):
+              if lines:
                   lines = lines[1:]
 
               if lines and lines[-1].strip() == "```":
@@ -200,174 +292,122 @@ jobs:
 
               text = "\n".join(lines).strip()
 
-          package = json.loads(text)
+          # -----------------------------------------------------
+          # Convert JSON
+          # -----------------------------------------------------
 
-          open(
+          try:
+
+              package = json.loads(text)
+
+          except json.JSONDecodeError:
+
+              print("Gemini returned invalid JSON:")
+              print(text)
+
+              raise RuntimeError(
+                  "Gemini output was not valid JSON."
+              )
+
+          # -----------------------------------------------------
+          # Validate required fields
+          # -----------------------------------------------------
+
+          required_fields = [
+              "title",
+              "description",
+              "hashtags",
+              "tags",
+              "long_script",
+              "short_script"
+          ]
+
+          for field in required_fields:
+
+              if field not in package:
+                  raise RuntimeError(
+                      f"Missing Gemini field: {field}"
+                  )
+
+          # -----------------------------------------------------
+          # Save files
+          # -----------------------------------------------------
+
+          with open(
               "title.txt",
               "w",
               encoding="utf-8"
-          ).write(package["title"])
+          ) as f:
+              f.write(
+                  str(package["title"]).strip()
+              )
 
-          open(
+          with open(
               "description.txt",
               "w",
               encoding="utf-8"
-          ).write(package["description"])
+          ) as f:
+              f.write(
+                  str(package["description"]).strip()
+              )
 
-          open(
+          with open(
               "long_script.txt",
               "w",
               encoding="utf-8"
-          ).write(package["long_script"])
+          ) as f:
+              f.write(
+                  str(package["long_script"]).strip()
+              )
 
-          open(
+          with open(
               "short_script.txt",
               "w",
               encoding="utf-8"
-          ).write(package["short_script"])
+          ) as f:
+              f.write(
+                  str(package["short_script"]).strip()
+              )
 
-          with open("tags.txt", "w", encoding="utf-8") as f:
-              f.write(",".join(package["tags"]))
-
-          with open("hashtags.txt", "w", encoding="utf-8") as f:
-              f.write(" ".join(package["hashtags"]))
-
-          print("CONTENT PACKAGE CREATED")
-          print("TITLE:", package["title"])
-          PY
-      # =========================================================
-      - name: Generate complete content package
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python - <<'PY'
-          import requests
-          import json
-          import os
-          import time
-
-          api_key = os.environ["GEMINI_API_KEY"]
-
-          topic = open("topic.txt", encoding="utf-8").read()
-          source = open("source.txt", encoding="utf-8").read()
-
-          prompt = f"""
-          You are the senior producer of a technology YouTube channel called TechMind.
-
-          CURRENT AI TOPIC:
-          {topic}
-
-          SOURCE:
-          {source}
-
-          Create a complete YouTube content package.
-
-          REQUIREMENTS:
-
-          1. Long-form video:
-          - 4 to 5 minutes spoken length.
-          - Strong first 10-second hook.
-          - Explain the news clearly.
-          - Explain why it matters.
-          - Explain practical use cases.
-          - Give examples.
-          - Avoid invented facts.
-          - End naturally with a TechMind subscribe CTA.
-
-          2. YouTube title:
-          - Attractive but truthful.
-          - Maximum 90 characters.
-
-          3. Description:
-          - 2 to 4 useful paragraphs.
-          - Include relevant hashtags at the end.
-          - No spam.
-
-          4. Tags:
-          - 8 to 15 relevant YouTube tags.
-
-          5. Short:
-          - 35 to 55 seconds.
-          - Strong hook.
-          - Summarize the most interesting part.
-          - End with a short CTA.
-
-          RETURN ONLY VALID JSON:
-
-          {{
-            "title": "...",
-            "description": "...",
-            "hashtags": ["#AI", "#ArtificialIntelligence"],
-            "tags": ["AI", "Artificial Intelligence"],
-            "long_script": "...",
-            "short_script": "..."
-          }}
-          """
-
-          url = (
-              "https://generativelanguage.googleapis.com/v1beta/"
-              "models/gemini-3.8-flash:generateContent"
-          )
-
-          payload = {
-              "contents": [
-                  {
-                      "parts": [
-                          {"text": prompt}
-                      ]
-                  }
-              ]
-          }
-
-          for attempt in range(4):
-              try:
-                  response = requests.post(
-                      url,
-                      params={"key": api_key},
-                      json=payload,
-                      timeout=180
+          with open(
+              "tags.txt",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              f.write(
+                  ",".join(
+                      str(tag).strip()
+                      for tag in package["tags"]
                   )
+              )
 
-                  response.raise_for_status()
-                  break
+          with open(
+              "hashtags.txt",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              f.write(
+                  " ".join(
+                      str(tag).strip()
+                      for tag in package["hashtags"]
+                  )
+              )
 
-              except requests.exceptions.Timeout:
-                  if attempt == 3:
-                      raise
+          print("")
+          print("========================================")
+          print("CONTENT PACKAGE CREATED SUCCESSFULLY")
+          print("========================================")
+          print("TITLE:")
+          print(package["title"])
+          print("")
+          print("LONG SCRIPT CHARACTERS:")
+          print(len(package["long_script"]))
+          print("")
+          print("SHORT SCRIPT CHARACTERS:")
+          print(len(package["short_script"]))
+          print("========================================")
 
-                  wait = 2 ** attempt
-                  print(f"Gemini timeout. Retrying in {wait}s...")
-                  time.sleep(wait)
-
-          data = response.json()
-
-          text = data["candidates"][0]["content"]["parts"][0]["text"]
-
-          text = text.strip()
-
-          if text.startswith("```"):
-              text = text.replace("```json", "", 1)
-              text = text.replace("```", "")
-              text = text.strip()
-
-          package = json.loads(text)
-
-          open("title.txt", "w", encoding="utf-8").write(package["title"])
-          open("description.txt", "w", encoding="utf-8").write(package["description"])
-          open("long_script.txt", "w", encoding="utf-8").write(package["long_script"])
-          open("short_script.txt", "w", encoding="utf-8").write(package["short_script"])
-
-          with open("tags.txt", "w", encoding="utf-8") as f:
-              f.write(",".join(package["tags"]))
-
-          with open("hashtags.txt", "w", encoding="utf-8") as f:
-              f.write(" ".join(package["hashtags"]))
-
-          print("CONTENT PACKAGE CREATED")
-          print("TITLE:", package["title"])
-          PY
-
-      # =========================================================
+          PY      # =========================================================
       # 4. LONG-FORM VOICE
       # =========================================================
       - name: Generate long voice
