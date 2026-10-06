@@ -8,13 +8,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip
-
-      - name: Install YouTube libraries
-        run: |
           pip install google-api-python-client google-auth google-auth-httplib2
 
       - name: Create test video
@@ -26,20 +23,14 @@ jobs:
             -pix_fmt yuv420p \
             test_video.mp4
 
-      - name: Upload to YouTube
+      - name: Prepare YouTube credentials
         env:
           YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
         run: |
-          python - <<'PY'
-          import json
-          import os
+          printf '%s' "$YOUTUBE_TOKEN_JSON" > youtube_token.json
 
-          with open("youtube_token.json", "w") as f:
-              f.write(os.environ["YOUTUBE_TOKEN_JSON"])
-
-          print("YouTube credential file created.")
-          PY
-
+      - name: Upload video to YouTube
+        run: |
           python - <<'PY'
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
