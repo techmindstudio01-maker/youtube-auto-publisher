@@ -1,0 +1,16 @@
+name: Automation Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 13 * * *"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test
+        run: |
+          echo "AUTOMATION IS WORKING"
+          date
