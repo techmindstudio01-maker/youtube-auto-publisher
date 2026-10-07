@@ -1,5 +1,5 @@
 # creator.py
-# TECHMIND STUDIO — Automatic AI YouTube Publisher
+# TECHMIND STUDIO — Automatic AI YouTube Publisher (Optimized & Fixed)
 
 import os
 import re
@@ -8,7 +8,6 @@ import time
 import random
 import subprocess
 from pathlib import Path
-
 import requests
 
 # ============================================================
@@ -44,21 +43,15 @@ if not YOUTUBE_TOKEN_JSON:
 
 def run(cmd):
     print("\nRUN:", " ".join(map(str, cmd)))
-
     p = subprocess.run(
         [str(x) for x in cmd],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
     )
-
     print(p.stdout)
-
     if p.returncode != 0:
-        raise RuntimeError(
-            f"Command failed: {p.returncode}"
-        )
-
+        raise RuntimeError(f"Command failed with exit code {p.returncode}")
     return p
 
 
@@ -82,50 +75,38 @@ def duration(path):
         text=True,
         check=True
     )
-
     return float(p.stdout.strip())
 
 
 # ============================================================
-# GEMINI
+# GEMINI API
 # ============================================================
 
 def gemini(prompt, retries=6):
-
     models = [
         "gemini-2.5-flash",
         "gemini-2.0-flash"
     ]
-
     last_error = None
 
     for attempt in range(1, retries + 1):
-
         for model in models:
-
-            url = (
-                "https://generativelanguage.googleapis.com/"
-                f"v1beta/models/{model}:generateContent"
-            )
-
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             payload = {
                 "contents": [
                     {
                         "parts": [
-                            {
-                                "text": prompt
-                            }
+                            {"text": prompt}
                         ]
                     }
                 ],
                 "generationConfig": {
                     "temperature": 0.85,
-                    "maxOutputTokens": 9000
+                    "maxOutputTokens": 8192
                 }
             }
 
             try:
-
                 r = requests.post(
                     url,
                     headers={
@@ -135,91 +116,50 @@ def gemini(prompt, retries=6):
                     json=payload,
                     timeout=120
                 )
-
-                print(
-                    "Gemini:",
-                    model,
-                    r.status_code
-                )
+                print(f"Gemini: {model} -> HTTP {r.status_code}")
 
                 if r.status_code == 200:
-
                     data = r.json()
-
-                    candidates = data.get(
-                        "candidates",
-                        []
-                    )
-
+                    candidates = data.get("candidates", [])
                     if not candidates:
                         continue
 
-                    parts = candidates[0].get(
-                        "content",
-                        {}
-                    ).get(
-                        "parts",
-                        []
-                    )
-
-                    text = ""
-
-                    for part in parts:
-                        if "text" in part:
-                            text += part["text"]
-
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(part.get("text", "") for part in parts if "text" in part)
                     text = clean(text)
 
                     if text:
                         return text
 
-                elif r.status_code in [
-                    429, 500, 502, 503, 504
-                ]:
+                elif r.status_code in [429, 500, 502, 503, 504]:
                     last_error = r.text
 
                 elif r.status_code == 404:
                     continue
 
                 else:
-                    raise RuntimeError(
-                        f"Gemini HTTP {r.status_code}: "
-                        f"{r.text[:500]}"
-                    )
+                    raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:500]}")
 
             except requests.RequestException as e:
                 last_error = str(e)
 
         wait = min(30, attempt * 4)
-
-        print(
-            f"Gemini retry in {wait}s..."
-        )
-
+        print(f"Gemini retry in {wait}s...")
         time.sleep(wait)
 
-    raise RuntimeError(
-        "Gemini failed after retries: "
-        + str(last_error)
-    )
+    raise RuntimeError("Gemini failed after retries: " + str(last_error))
 
 
 # ============================================================
-# CONTENT
+# CONTENT GENERATION
 # ============================================================
 
 def create_content():
-
     prompt = f"""
 You are the senior producer for {CHANNEL}.
-
 Create ONE fresh AI/technology YouTube topic.
-
-The long video must be 4 to 5 minutes and around 700-850
-spoken words.
-
-Create 8 visually different scenes.
-
+The long video must be 4 to 5 minutes and around 700-850 spoken words.
+Create 8 visually different scenes for the long video.
 Each scene needs:
 - narration
 - visual_query
@@ -227,37 +167,26 @@ Each scene needs:
 Also create a 40-55 second Short using 4 scenes.
 
 Requirements:
-
 LONG VIDEO:
 - powerful first 10 seconds
 - natural conversational English
-- useful information
-- practical examples
-- no fake facts
-- no repetitive filler
+- useful information & practical examples
+- no fake facts, no repetitive filler
 - strong ending
-- every scene visually different
 
 SHORT:
-- fast hook
-- useful
-- 4 scenes
-- vertical-video friendly
+- fast hook, useful, 4 scenes, vertical-video friendly
 
 TITLE:
-- under 90 characters
-- clickable but truthful
-- include 1 or 2 relevant AI/tech emojis
+- under 90 characters, clickable but truthful, include 1 or 2 relevant AI/tech emojis
 
 DESCRIPTION:
-- professional
-- include hashtags
+- professional, include hashtags
 
 TAGS:
 - 12 to 15 YouTube tags
 
 Return ONLY valid JSON:
-
 {{
   "topic": "...",
   "title": "...",
@@ -278,30 +207,20 @@ Return ONLY valid JSON:
   ]
 }}
 """
-
     raw = gemini(prompt)
-
     start = raw.find("{")
     end = raw.rfind("}")
 
     if start < 0 or end < 0:
-        raise RuntimeError(
-            "Gemini returned invalid JSON"
-        )
+        raise RuntimeError("Gemini returned invalid JSON")
 
-    data = json.loads(
-        raw[start:end + 1]
-    )
+    data = json.loads(raw[start:end + 1])
 
     if len(data.get("long_scenes", [])) < 6:
-        raise RuntimeError(
-            "Not enough long-video scenes"
-        )
+        raise RuntimeError("Not enough long-video scenes")
 
     if len(data.get("short_scenes", [])) < 4:
-        raise RuntimeError(
-            "Not enough Short scenes"
-        )
+        raise RuntimeError("Not enough Short scenes")
 
     return data
 
@@ -311,22 +230,16 @@ Return ONLY valid JSON:
 # ============================================================
 
 def voice(text, output):
-
     run([
         "edge-tts",
-        "--voice",
-        VOICE,
+        "--voice", VOICE,
         "--rate=-5%",
-        "--text",
-        text,
-        "--write-media",
-        str(output)
+        "--text", text,
+        "--write-media", str(output)
     ])
 
     if not output.exists():
-        raise RuntimeError(
-            "Voice file was not created"
-        )
+        raise RuntimeError("Voice file was not created")
 
 
 # ============================================================
@@ -334,7 +247,6 @@ def voice(text, output):
 # ============================================================
 
 def find_images(query):
-
     r = requests.get(
         "https://commons.wikimedia.org/w/api.php",
         params={
@@ -350,36 +262,16 @@ def find_images(query):
         },
         timeout=40
     )
-
     r.raise_for_status()
-
-    pages = r.json().get(
-        "query",
-        {}
-    ).get(
-        "pages",
-        {}
-    )
-
+    pages = r.json().get("query", {}).get("pages", {})
     urls = []
 
     for page in pages.values():
-
-        info = page.get(
-            "imageinfo",
-            []
-        )
-
+        info = page.get("imageinfo", [])
         if not info:
             continue
-
         item = info[0]
-
-        url = (
-            item.get("thumburl")
-            or item.get("url")
-        )
-
+        url = item.get("thumburl") or item.get("url")
         if url:
             urls.append(url)
 
@@ -387,99 +279,53 @@ def find_images(query):
 
 
 def download_image(query, output):
-
-    print(
-        "\nIMAGE SEARCH:",
-        query
-    )
-
+    print("\nIMAGE SEARCH:", query)
     urls = find_images(query)
-
     random.shuffle(urls)
 
     for url in urls:
-
         try:
-
             r = requests.get(
                 url,
                 timeout=60,
-                headers={
-                    "User-Agent":
-                    "TechMindStudio/1.0"
-                }
+                headers={"User-Agent": "TechMindStudio/1.0"}
             )
-
             r.raise_for_status()
-
-            if len(r.content) < 50000:
+            if len(r.content) < 30000:
                 continue
-
-            output.write_bytes(
-                r.content
-            )
-
-            print(
-                "IMAGE OK:",
-                output
-            )
-
+            output.write_bytes(r.content)
+            print("IMAGE OK:", output)
             return
-
         except Exception as e:
-            print(
-                "Image failed:",
-                e
-            )
+            print("Image failed:", e)
 
-    raise RuntimeError(
-        "No usable image found for: "
-        + query
-    )
+    raise RuntimeError("No usable image found for query: " + query)
 
 
 # ============================================================
-# SCENE VIDEO
+# SCENE VIDEO (FFMPEG)
 # ============================================================
 
-def make_scene(
-    image,
-    audio,
-    output,
-    motion
-):
-
-    W = 1920
-    H = 1080
-
+def make_scene(image, audio, output, motion):
     d = duration(audio)
 
     if motion == "left":
-
         x = "(iw-iw/zoom)*(0.5+0.35*sin(on/180))"
         y = "ih/2-(ih/zoom/2)"
         z = "1.05"
-
     elif motion == "right":
-
         x = "(iw-iw/zoom)*(0.5-0.35*sin(on/180))"
         y = "ih/2-(ih/zoom/2)"
         z = "1.05"
-
     elif motion == "up":
-
         x = "iw/2-(iw/zoom/2)"
         y = "(ih-ih/zoom)*(0.5-0.35*sin(on/180))"
         z = "1.05"
-
     elif motion == "down":
-
         x = "iw/2-(iw/zoom/2)"
         y = "(ih-ih/zoom)*(0.5+0.35*sin(on/180))"
         z = "1.05"
-
     else:
-
         x = "iw/2-(iw/zoom/2)"
         y = "ih/2-(ih/zoom/2)"
         z = "1.02+0.00008*on"
@@ -524,29 +370,13 @@ def make_scene(
 # ============================================================
 
 def create_long(data):
-
     scenes = data["long_scenes"]
-
     videos = []
-
-    motions = [
-        "zoom",
-        "left",
-        "right",
-        "up",
-        "down",
-        "zoom",
-        "left",
-        "right"
-    ]
+    motions = ["zoom", "left", "right", "up", "down", "zoom", "left", "right"]
 
     for i, scene in enumerate(scenes):
-
         n = i + 1
-
-        print(
-            f"\n===== LONG SCENE {n}/{len(scenes)} ====="
-        )
+        print(f"\n===== LONG SCENE {n}/{len(scenes)} =====")
 
         narration = scene["narration"]
         query = scene["visual_query"]
@@ -555,41 +385,17 @@ def create_long(data):
         image = LONG / f"scene_{n:02d}.jpg"
         video = LONG / f"scene_{n:02d}.mp4"
 
-        voice(
-            narration,
-            audio
-        )
-
-        download_image(
-            query,
-            image
-        )
-
-        make_scene(
-            image,
-            audio,
-            video,
-            motions[i % len(motions)]
-        )
-
+        voice(narration, audio)
+        download_image(query, image)
+        make_scene(image, audio, video, motions[i % len(motions)])
         videos.append(video)
 
     concat = LONG / "concat.txt"
-
-    with concat.open(
-        "w",
-        encoding="utf-8"
-    ) as f:
-
+    with concat.open("w", encoding="utf-8") as f:
         for video in videos:
-            f.write(
-                "file '"
-                + str(video.resolve())
-                + "'\n"
-            )
+            f.write(f"file '{video.resolve()}'\n")
 
     raw = LONG / "raw_long.mp4"
-
     run([
         "ffmpeg",
         "-y",
@@ -602,16 +408,13 @@ def create_long(data):
     ])
 
     final = LONG / "final_long.mp4"
-
-    # TechMind Studio branding only.
     run([
         "ffmpeg",
         "-y",
         "-i", str(raw),
-        "-vf",
-        (
+        "-vf", (
             "drawtext="
-            "font=DejaVuSans-Bold:"
+            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
             "fontcolor=white@0.80:"
             "fontsize=34:"
             "text='TechMind Studio':"
@@ -638,29 +441,17 @@ def create_long(data):
 # ============================================================
 
 def create_short(data):
-
     scenes = data["short_scenes"]
-
     videos = []
 
     for i, scene in enumerate(scenes):
-
         n = i + 1
-
         audio = AUDIO / f"short_{n:02d}.mp3"
         image = SHORT / f"scene_{n:02d}.jpg"
         video = SHORT / f"scene_{n:02d}.mp4"
 
-        voice(
-            scene["narration"],
-            audio
-        )
-
-        download_image(
-            scene["visual_query"],
-            image
-        )
-
+        voice(scene["narration"], audio)
+        download_image(scene["visual_query"], image)
         d = duration(audio)
 
         vf = (
@@ -696,25 +487,14 @@ def create_short(data):
             "-movflags", "+faststart",
             str(video)
         ])
-
         videos.append(video)
 
     concat = SHORT / "concat.txt"
-
-    with concat.open(
-        "w",
-        encoding="utf-8"
-    ) as f:
-
+    with concat.open("w", encoding="utf-8") as f:
         for video in videos:
-            f.write(
-                "file '"
-                + str(video.resolve())
-                + "'\n"
-            )
+            f.write(f"file '{video.resolve()}'\n")
 
     raw = SHORT / "raw_short.mp4"
-
     run([
         "ffmpeg",
         "-y",
@@ -727,15 +507,13 @@ def create_short(data):
     ])
 
     final = SHORT / "final_short.mp4"
-
     run([
         "ffmpeg",
         "-y",
         "-i", str(raw),
-        "-vf",
-        (
+        "-vf", (
             "drawtext="
-            "font=DejaVuSans-Bold:"
+            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
             "fontcolor=white@0.82:"
             "fontsize=38:"
             "text='TechMind Studio':"
@@ -762,34 +540,22 @@ def create_short(data):
 # ============================================================
 
 def create_thumbnail(data):
-
     image = THUMB / "source.jpg"
+    download_image(data["topic"] + " artificial intelligence technology", image)
 
-    download_image(
-        data["topic"] + " artificial intelligence technology",
-        image
-    )
-
-    title = (
-        data["title"]
-        .replace("'", "")
-        .replace('"', "")
-        .replace(":", "")
-    )
-
+    title = data["title"].replace("'", "").replace('"', "").replace(":", "")
     output = THUMB / "thumbnail.jpg"
 
     run([
         "ffmpeg",
         "-y",
         "-i", str(image),
-        "-vf",
-        (
+        "-vf", (
             "scale=1280:720:"
             "force_original_aspect_ratio=increase,"
             "crop=1280:720,"
             "drawtext="
-            "font=DejaVuSans-Bold:"
+            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
             "fontcolor=white:"
             "fontsize=62:"
             "borderw=5:"
@@ -802,40 +568,26 @@ def create_thumbnail(data):
         "-q:v", "2",
         str(output)
     ])
-
     return output
 
 
 # ============================================================
-# METADATA
+# METADATA & YOUTUBE UPLOAD
 # ============================================================
 
 def save_metadata(data):
-
     hashtags = []
-
     for h in data.get("hashtags", []):
         h = str(h).strip()
-
         if h and not h.startswith("#"):
             h = "#" + h
-
         if h:
             hashtags.append(h)
 
-    description = clean(
-        data.get("description", "")
-    )
-
-    hashtag_text = " ".join(
-        hashtags
-    )
-
+    description = clean(data.get("description", ""))
+    hashtag_text = " ".join(hashtags)
     if hashtag_text and hashtag_text not in description:
-        description += (
-            "\n\n" +
-            hashtag_text
-        )
+        description += "\n\n" + hashtag_text
 
     metadata = {
         "title": clean(data["title"]),
@@ -846,107 +598,56 @@ def save_metadata(data):
     }
 
     (BASE / "metadata.json").write_text(
-        json.dumps(
-            metadata,
-            indent=2,
-            ensure_ascii=False
-        ),
+        json.dumps(metadata, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
-
     return metadata
 
 
-# ============================================================
-# YOUTUBE
-# ============================================================
-
 def youtube_service():
-
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
 
-    data = json.loads(
-        YOUTUBE_TOKEN_JSON
-    )
-
+    data = json.loads(YOUTUBE_TOKEN_JSON)
     if "installed" in data or "web" in data:
-        raise RuntimeError(
-            "YOUTUBE_TOKEN_JSON is OAuth client secret, "
-            "not authorized token JSON."
-        )
+        raise RuntimeError("YOUTUBE_TOKEN_JSON is OAuth client secret, not authorized token JSON.")
 
     creds = Credentials(
         token=data.get("token"),
         refresh_token=data.get("refresh_token"),
-        token_uri=data.get(
-            "token_uri",
-            "https://oauth2.googleapis.com/token"
-        ),
+        token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=data.get("client_id"),
         client_secret=data.get("client_secret"),
-        scopes=data.get(
-            "scopes",
-            [
-                "https://www.googleapis.com/auth/youtube.upload"
-            ]
-        )
+        scopes=data.get("scopes", ["https://www.googleapis.com/auth/youtube.upload"])
     )
 
     if creds.expired and creds.refresh_token:
-        creds.refresh(
-            Request()
-        )
+        creds.refresh(Request())
 
     if not creds.valid:
-        raise RuntimeError(
-            "YouTube token is invalid."
-        )
+        raise RuntimeError("YouTube token is invalid.")
 
-    return build(
-        "youtube",
-        "v3",
-        credentials=creds,
-        cache_discovery=False
-    )
+    return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
 
-def upload(
-    service,
-    video,
-    metadata,
-    thumbnail=None,
-    short=False
-):
-
+def upload(service, video, metadata, thumbnail=None, short=False):
     from googleapiclient.http import MediaFileUpload
 
     title = metadata["title"]
-
     if short and "#Shorts" not in title:
         title += " #Shorts"
 
     tags = []
-
-    for tag in metadata.get(
-        "tags",
-        []
-    ):
-
-        tag = str(tag).replace(
-            "#", ""
-        ).strip()
-
+    for tag in metadata.get("tags", []):
+        tag = str(tag).replace("#", "").strip()
         if tag and tag not in tags:
             tags.append(tag)
-
-    description = metadata["description"]
 
     body = {
         "snippet": {
             "title": title[:100],
-            "description": description[:5000],
+            "description": metadata["description"][:5000],
             "tags": tags[:30],
             "categoryId": "28"
         },
@@ -956,58 +657,25 @@ def upload(
         }
     }
 
-    print(
-        "\nUPLOADING:",
-        title
-    )
-
-    media = MediaFileUpload(
-        str(video),
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=8 * 1024 * 1024
-    )
-
-    request = service.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media
-    )
+    print("\nUPLOADING:", title)
+    media = MediaFileUpload(str(video), mimetype="video/mp4", resumable=True, chunksize=8 * 1024 * 1024)
+    request = service.videos().insert(part="snippet,status", body=body, media_body=media)
 
     response = None
-
     while response is None:
-
-        status, response = (
-            request.next_chunk()
-        )
-
+        status, response = request.next_chunk()
         if status:
-            print(
-                "UPLOAD:",
-                int(
-                    status.progress() * 100
-                ),
-                "%"
-            )
+            print(f"UPLOAD: {int(status.progress() * 100)}%")
 
     video_id = response["id"]
 
     if thumbnail and not short:
-
         service.thumbnails().set(
             videoId=video_id,
-            media_body=MediaFileUpload(
-                str(thumbnail),
-                mimetype="image/jpeg"
-            )
+            media_body=MediaFileUpload(str(thumbnail), mimetype="image/jpeg")
         ).execute()
 
-    print(
-        "YOUTUBE ID:",
-        video_id
-    )
-
+    print("YOUTUBE ID:", video_id)
     return video_id
 
 
@@ -1016,86 +684,30 @@ def upload(
 # ============================================================
 
 def main():
+    print("\n====================================")
+    print(" TECHMIND STUDIO AUTO PUBLISHER")
+    print("====================================\n")
 
-    print(
-        "\n===================================="
-    )
-
-    print(
-        " TECHMIND STUDIO AUTO PUBLISHER"
-    )
-
-    print(
-        "====================================\n"
-    )
-
-    # 1 — Fresh AI content
     data = create_content()
+    print("\nTOPIC:", data["topic"])
+    print("\nTITLE:", data["title"])
 
-    print(
-        "\nTOPIC:",
-        data["topic"]
-    )
+    metadata = save_metadata(data)
 
-    print(
-        "\nTITLE:",
-        data["title"]
-    )
+    print("\nCREATING LONG VIDEO...")
+    long_video = create_long(data)
 
-    # 2 — Metadata
-    metadata = save_metadata(
-        data
-    )
+    print("\nCREATING SHORT...")
+    short_video = create_short(data)
 
-    # 3 — Long video
-    print(
-        "\nCREATING LONG VIDEO..."
-    )
+    print("\nCREATING THUMBNAIL...")
+    thumbnail = create_thumbnail(data)
 
-    long_video = create_long(
-        data
-    )
-
-    # 4 — Short
-    print(
-        "\nCREATING SHORT..."
-    )
-
-    short_video = create_short(
-        data
-    )
-
-    # 5 — Thumbnail
-    print(
-        "\nCREATING THUMBNAIL..."
-    )
-
-    thumbnail = create_thumbnail(
-        data
-    )
-
-    # 6 — YouTube
-    print(
-        "\nCONNECTING TO YOUTUBE..."
-    )
-
+    print("\nCONNECTING TO YOUTUBE...")
     service = youtube_service()
 
-    long_id = upload(
-        service,
-        long_video,
-        metadata,
-        thumbnail=thumbnail,
-        short=False
-    )
-
-    short_id = upload(
-        service,
-        short_video,
-        metadata,
-        thumbnail=None,
-        short=True
-    )
+    long_id = upload(service, long_video, metadata, thumbnail=thumbnail, short=False)
+    short_id = upload(service, short_video, metadata, thumbnail=None, short=True)
 
     result = {
         "title": metadata["title"],
@@ -1105,42 +717,20 @@ def main():
         "thumbnail": str(thumbnail),
         "long_video_id": long_id,
         "short_video_id": short_id,
-        "long_url":
-            f"https://youtube.com/watch?v={long_id}",
-        "short_url":
-            f"https://youtube.com/watch?v={short_id}"
+        "long_url": f"https://youtube.com/watch?v={long_id}",
+        "short_url": f"https://youtube.com/watch?v={short_id}"
     }
 
     (BASE / "youtube_upload.json").write_text(
-        json.dumps(
-            result,
-            indent=2,
-            ensure_ascii=False
-        ),
+        json.dumps(result, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
 
-    print(
-        "\n===================================="
-    )
-
-    print(
-        " SUCCESS — TECHMIND STUDIO"
-    )
-
-    print(
-        "===================================="
-    )
-
-    print(
-        "\nLONG:",
-        result["long_url"]
-    )
-
-    print(
-        "SHORT:",
-        result["short_url"]
-    )
+    print("\n====================================")
+    print(" SUCCESS — TECHMIND STUDIO")
+    print("====================================")
+    print("\nLONG:", result["long_url"])
+    print("SHORT:", result["short_url"])
 
 
 if __name__ == "__main__":
