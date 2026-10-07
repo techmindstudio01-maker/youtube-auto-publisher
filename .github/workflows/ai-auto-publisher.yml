@@ -11,7 +11,7 @@ permissions:
 jobs:
   create-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
 
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -56,17 +56,18 @@ jobs:
 
 
           # ============================================================
-          # DIRECTORIES
+          # CONFIG
           # ============================================================
 
           ROOT = Path("production")
+
           VISUAL_DIR = ROOT / "visuals"
           AUDIO_DIR = ROOT / "audio"
           LONG_SCENE_DIR = ROOT / "long_scenes"
           SHORT_DIR = ROOT / "short"
           THUMB_DIR = ROOT / "thumbnail"
 
-          for d in [
+          for folder in [
               ROOT,
               VISUAL_DIR,
               AUDIO_DIR,
@@ -74,12 +75,15 @@ jobs:
               SHORT_DIR,
               THUMB_DIR
           ]:
-              d.mkdir(parents=True, exist_ok=True)
+              folder.mkdir(
+                  parents=True,
+                  exist_ok=True
+              )
 
+          GEMINI_API_KEY = os.environ[
+              "GEMINI_API_KEY"
+          ]
 
-          GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-
-          # Current reliable text models.
           TEXT_MODELS = [
               "gemini-3.5-flash-lite",
               "gemini-3.8-flash"
@@ -89,12 +93,15 @@ jobs:
 
 
           # ============================================================
-          # COMMAND
+          # COMMAND RUNNER
           # ============================================================
 
           def run(cmd, check=True):
 
-              print("\nRUN:", " ".join(map(str, cmd)))
+              print(
+                  "\nRUN:",
+                  " ".join(map(str, cmd))
+              )
 
               result = subprocess.run(
                   cmd,
@@ -103,7 +110,9 @@ jobs:
                   text=True
               )
 
-              print(result.stdout[-5000:])
+              print(
+                  result.stdout[-5000:]
+              )
 
               if check and result.returncode != 0:
                   raise RuntimeError(
@@ -123,7 +132,7 @@ jobs:
                   "https://news.google.com/rss/search?q=AI+artificial+intelligence&hl=en-US&gl=US&ceid=US:en",
                   "https://news.google.com/rss/search?q=generative+AI&hl=en-US&gl=US&ceid=US:en",
                   "https://news.google.com/rss/search?q=OpenAI+Gemini+AI&hl=en-US&gl=US&ceid=US:en",
-                  "https://news.google.com/rss/search?q=AI+technology+2026&hl=en-US&gl=US&ceid=US:en"
+                  "https://news.google.com/rss/search?q=AI+technology&hl=en-US&gl=US&ceid=US:en"
               ]
 
               results = []
@@ -135,16 +144,16 @@ jobs:
 
                       feed = feedparser.parse(url)
 
-                      for item in feed.entries[:10]:
+                      for entry in feed.entries[:10]:
 
                           title = getattr(
-                              item,
+                              entry,
                               "title",
                               ""
                           ).strip()
 
                           summary = getattr(
-                              item,
+                              entry,
                               "summary",
                               ""
                           )
@@ -165,13 +174,13 @@ jobs:
 
                                   results.append({
                                       "title": title,
-                                      "summary": summary[:800]
+                                      "summary": summary[:1000]
                                   })
 
                   except Exception as e:
 
                       print(
-                          "News feed warning:",
+                          "NEWS WARNING:",
                           e
                       )
 
@@ -192,8 +201,6 @@ jobs:
 
               for model in TEXT_MODELS:
 
-                  # Only 3 attempts.
-                  # No 1-hour retry loop.
                   for attempt in range(1, 4):
 
                       print(
@@ -207,8 +214,8 @@ jobs:
                               model=model,
                               contents=prompt,
                               config=types.GenerateContentConfig(
-                                  temperature=0.8,
-                                  max_output_tokens=14000
+                                  temperature=0.75,
+                                  max_output_tokens=16000
                               )
                           )
 
@@ -216,7 +223,7 @@ jobs:
 
                           if text and len(
                               text.strip()
-                          ) > 100:
+                          ) > 200:
 
                               print(
                                   "TEXT SUCCESS:",
@@ -239,11 +246,11 @@ jobs:
                               str(e)[:500]
                           )
 
-                          error = str(e).lower()
+                          err = str(e).lower()
 
                           retryable = any(
-                              x in error
-                              for x in [
+                              word in err
+                              for word in [
                                   "429",
                                   "500",
                                   "502",
@@ -274,12 +281,13 @@ jobs:
                   )
 
               raise RuntimeError(
-                  f"Gemini text failed: {last_error}"
+                  f"Gemini text generation failed: "
+                  f"{last_error}"
               )
 
 
           # ============================================================
-          # JSON
+          # PARSE JSON
           # ============================================================
 
           def parse_json(text):
@@ -309,9 +317,10 @@ jobs:
               start = text.find("{")
               end = text.rfind("}")
 
-              if start < 0 or end < 0:
+              if start == -1 or end == -1:
+
                   raise RuntimeError(
-                      "Gemini did not return JSON."
+                      "No JSON returned by Gemini."
                   )
 
               return json.loads(
@@ -327,36 +336,52 @@ jobs:
 
               news = get_news()
 
-              news_text = "\n".join(
-                  [
-                      f"- {x['title']}: "
-                      f"{x['summary']}"
-                      for x in news
-                  ]
-              )
+              if news:
+
+                  news_text = "\n".join(
+                      [
+                          f"- {item['title']}: "
+                          f"{item['summary']}"
+                          for item in news
+                      ]
+                  )
+
+              else:
+
+                  news_text = (
+                      "No fresh feed available. "
+                      "Choose a current major AI topic."
+                  )
 
               prompt = f"""
-          You are the senior producer of TechMind AI,
-          a professional AI and technology YouTube channel.
+          You are the senior producer for a professional
+          AI and technology YouTube channel called
+          TechMind AI.
 
-          Current fresh topics:
+          CURRENT AI NEWS:
 
           {news_text}
 
-          Select the strongest CURRENT AI topic.
+          Choose ONE strong current AI topic.
 
-          Create an ORIGINAL YouTube video package.
+          Create an ORIGINAL YouTube package.
 
-          Return ONLY valid JSON.
+          RETURN ONLY VALID JSON.
 
-          JSON:
+          EXACT JSON STRUCTURE:
 
           {{
             "topic": "...",
             "title": "...",
             "description": "...",
-            "hashtags": ["#AI", "#Tech"],
-            "tags": ["AI", "artificial intelligence"],
+            "hashtags": [
+              "#AI",
+              "#ArtificialIntelligence"
+            ],
+            "tags": [
+              "AI",
+              "artificial intelligence"
+            ],
             "long_script": "...",
             "scenes": [
               {{
@@ -375,68 +400,230 @@ jobs:
             ]
           }}
 
-          REQUIREMENTS:
+          ============================================================
+          LONG VIDEO REQUIREMENTS
+          ============================================================
 
-          TITLE:
-          - maximum 90 characters
-          - attractive
-          - NOT fake clickbait
-          - include 1-2 relevant emojis
+          The long video MUST be approximately 4-5 minutes.
 
-          LONG VIDEO:
-          - 4 to 5 minutes
-          - 10 scenes exactly
-          - strong first 10 seconds
-          - natural spoken English
-          - original explanation
-          - useful examples
-          - no filler
-          - clear conclusion
-          - subscribe CTA at end
+          Generate approximately 700-800 spoken words.
 
-          Each scene must have:
-          - different visual idea
+          Generate EXACTLY 10 scenes.
+
+          EACH scene voiceover MUST contain approximately
+          65-80 spoken words.
+
+          Do NOT make the voiceovers short.
+
+          The 10 scenes should naturally produce a
+          4-5 minute video when spoken by a natural voice.
+
+          Scene structure:
+
+          Scene 1:
+          Extremely strong hook.
+          Explain why viewers should care.
+
+          Scene 2:
+          Explain the current development.
+
+          Scene 3:
+          Explain what changed.
+
+          Scene 4:
+          Explain how the technology works.
+
+          Scene 5:
+          Give a practical example.
+
+          Scene 6:
+          Explain benefits.
+
+          Scene 7:
+          Explain limitations or risks.
+
+          Scene 8:
+          Explain what happens next.
+
+          Scene 9:
+          Give useful takeaway for viewers.
+
+          Scene 10:
+          Strong conclusion and natural subscribe CTA.
+
+          Every scene MUST have:
+
+          - different visual concept
           - short visual title
           - short visual text
-          - natural voiceover
+          - 65-80 word voiceover
 
-          SHORT:
-          - 35-55 seconds
-          - 5 scenes
-          - very strong hook
-          - vertical-video friendly
+          Do not copy news articles.
 
-          DESCRIPTION:
-          - useful 2-4 paragraphs
-          - SEO keywords naturally included
-          - hashtags at the end
+          Rewrite everything in original language.
 
-          HASHTAGS:
-          - 5-8 relevant hashtags
+          Use natural spoken English.
 
-          TAGS:
-          - 10-20 relevant YouTube tags
+          Avoid robotic writing.
+
+          Avoid filler.
+
+          ============================================================
+          TITLE
+          ============================================================
+
+          Maximum 90 characters.
+
+          Strong but truthful.
+
+          Include 1 or 2 relevant emojis.
+
+          ============================================================
+          DESCRIPTION
+          ============================================================
+
+          Write 2-4 useful paragraphs.
+
+          Explain the video.
+
+          Include relevant search keywords naturally.
+
+          End with the hashtags.
+
+          ============================================================
+          HASHTAGS
+          ============================================================
+
+          5-8 relevant hashtags.
+
+          ============================================================
+          TAGS
+          ============================================================
+
+          10-20 relevant YouTube tags.
+
+          ============================================================
+          SHORT
+          ============================================================
+
+          Create a 35-55 second Short.
+
+          EXACTLY 5 scenes.
+
+          Each voiceover should be approximately
+          20-30 words.
+
+          First scene must have an extremely strong hook.
+
+          Final scene should encourage viewers
+          to watch the full video.
           """
 
-              raw = gemini_text(prompt)
+              raw = gemini_text(
+                  prompt
+              )
 
-              package = parse_json(raw)
+              package = parse_json(
+                  raw
+              )
 
-              if len(package["scenes"]) < 10:
+              # --------------------------------------------------------
+              # VALIDATION
+              # --------------------------------------------------------
+
+              required = [
+                  "topic",
+                  "title",
+                  "description",
+                  "hashtags",
+                  "tags",
+                  "long_script",
+                  "scenes",
+                  "short_title",
+                  "short_scenes"
+              ]
+
+              for field in required:
+
+                  if field not in package:
+
+                      raise RuntimeError(
+                          f"Missing field: {field}"
+                      )
+
+              scenes = package["scenes"]
+
+              if len(scenes) < 10:
 
                   raise RuntimeError(
                       "AI returned fewer than 10 scenes."
                   )
 
-              if len(
-                  package["short_scenes"]
-              ) < 5:
+              # Keep exactly first 10.
+              package["scenes"] = scenes[:10]
+
+              short_scenes = package[
+                  "short_scenes"
+              ]
+
+              if len(short_scenes) < 5:
 
                   raise RuntimeError(
                       "AI returned fewer than 5 short scenes."
                   )
 
-              # Force hashtags into description.
+              package["short_scenes"] = (
+                  short_scenes[:5]
+              )
+
+              # --------------------------------------------------------
+              # HARD WORD CHECK
+              # --------------------------------------------------------
+
+              total_words = len(
+                  package[
+                      "long_script"
+                  ].split()
+              )
+
+              print(
+                  "LONG SCRIPT WORDS:",
+                  total_words
+              )
+
+              if total_words < 650:
+
+                  raise RuntimeError(
+                      f"Long script too short: "
+                      f"{total_words} words."
+                  )
+
+              # Scene voiceover check.
+              for i, scene in enumerate(
+                  package["scenes"],
+                  start=1
+              ):
+
+                  words = len(
+                      scene[
+                          "voiceover"
+                      ].split()
+                  )
+
+                  print(
+                      f"SCENE {i} WORDS:",
+                      words
+                  )
+
+                  if words < 50:
+
+                      raise RuntimeError(
+                          f"Scene {i} voiceover "
+                          f"is too short: "
+                          f"{words} words."
+                      )
+
+              # Ensure hashtags in description.
               hashtag_text = " ".join(
                   package["hashtags"]
               )
@@ -446,7 +633,8 @@ jobs:
               ]:
 
                   package["description"] += (
-                      "\n\n" + hashtag_text
+                      "\n\n"
+                      + hashtag_text
                   )
 
               return package
@@ -468,10 +656,7 @@ jobs:
 
 
           # ============================================================
-          # GENERATED TECH VISUAL
-          #
-          # NO EXTERNAL IMAGE API.
-          # Therefore no image 429 can stop the workflow.
+          # PROCEDURAL TECH VISUAL
           # ============================================================
 
           def create_visual(
@@ -483,166 +668,201 @@ jobs:
               height=720
           ):
 
+              # Different background for every scene.
+              bg = (
+                  7 + (index * 13) % 25,
+                  12 + (index * 19) % 30,
+                  25 + (index * 29) % 55
+              )
+
               img = Image.new(
                   "RGB",
                   (width, height),
-                  (
-                      8 + (index * 7) % 25,
-                      14 + (index * 11) % 35,
-                      28 + (index * 17) % 55
-                  )
+                  bg
               )
 
-              draw = ImageDraw.Draw(img)
+              draw = ImageDraw.Draw(
+                  img
+              )
 
-              bold = ImageFont.truetype(
+              title_size = (
+                  52
+                  if height == 720
+                  else 42
+              )
+
+              text_size = (
+                  29
+                  if height == 720
+                  else 23
+              )
+
+              title_font = ImageFont.truetype(
                   FONT_BOLD,
-                  54 if height == 720 else 42
+                  title_size
               )
 
-              regular = ImageFont.truetype(
+              text_font = ImageFont.truetype(
                   FONT_REGULAR,
-                  30 if height == 720 else 24
+                  text_size
               )
 
-              small = ImageFont.truetype(
+              small_font = ImageFont.truetype(
                   FONT_BOLD,
-                  24
+                  23
               )
 
-              # Tech grid.
-              spacing = 80
+              # Grid.
+              grid = 70
 
               for x in range(
                   0,
                   width,
-                  spacing
+                  grid
               ):
 
                   draw.line(
                       [(x, 0), (x, height)],
-                      fill=(35, 45, 65),
+                      fill=(30, 42, 62),
                       width=1
                   )
 
               for y in range(
                   0,
                   height,
-                  spacing
+                  grid
               ):
 
                   draw.line(
                       [(0, y), (width, y)],
-                      fill=(35, 45, 65),
+                      fill=(30, 42, 62),
                       width=1
                   )
 
-              # Decorative circles.
-              for j in range(6):
+              # Tech nodes.
+              nodes = []
 
-                  cx = (
-                      (index * 170 + j * 230)
-                      % width
+              for j in range(7):
+
+                  x = (
+                      100 +
+                      (
+                          index * 149 +
+                          j * 173
+                      ) %
+                      max(
+                          width - 200,
+                          1
+                      )
                   )
 
-                  cy = (
-                      120 +
-                      (j * 97 + index * 43)
-                      % (height - 220)
+                  y = (
+                      100 +
+                      (
+                          index * 83 +
+                          j * 107
+                      ) %
+                      max(
+                          height - 230,
+                          1
+                      )
                   )
 
-                  r = 25 + (
-                      (j + index) % 4
-                  ) * 12
+                  nodes.append(
+                      (x, y)
+                  )
+
+                  radius = (
+                      22 +
+                      ((index + j) % 4)
+                      * 10
+                  )
 
                   draw.ellipse(
                       [
-                          cx - r,
-                          cy - r,
-                          cx + r,
-                          cy + r
+                          x-radius,
+                          y-radius,
+                          x+radius,
+                          y+radius
                       ],
-                      outline=(70, 130, 210),
+                      outline=(
+                          65,
+                          135,
+                          225
+                      ),
                       width=3
                   )
 
-              # Connecting lines.
-              for j in range(5):
-
-                  x1 = (
-                      100 +
-                      ((index * 97 + j * 190)
-                       % (width - 200))
-                  )
-
-                  y1 = (
-                      170 +
-                      ((j * 83 + index * 31)
-                       % (height - 300))
-                  )
-
-                  x2 = (
-                      300 +
-                      ((index * 131 + j * 211)
-                       % (width - 400))
-                  )
-
-                  y2 = (
-                      250 +
-                      ((j * 113 + index * 47)
-                       % (height - 350))
-                  )
+              # Connections.
+              for j in range(
+                  len(nodes) - 1
+              ):
 
                   draw.line(
-                      [(x1, y1), (x2, y2)],
-                      fill=(90, 150, 230),
+                      [
+                          nodes[j],
+                          nodes[j+1]
+                      ],
+                      fill=(
+                          70,
+                          120,
+                          205
+                      ),
                       width=3
                   )
 
-              # Dark content panel.
+              # Main panel.
               panel = (
-                  70,
-                  80,
-                  width - 70,
-                  height - 90
+                  65,
+                  65,
+                  width - 65,
+                  height - 65
               )
 
               draw.rounded_rectangle(
                   panel,
-                  radius=25,
-                  fill=(7, 12, 22),
-                  outline=(65, 100, 150),
+                  radius=28,
+                  fill=(5, 9, 18),
+                  outline=(70, 110, 170),
                   width=2
               )
 
-              # Scene number.
+              # Scene label.
               draw.text(
-                  (110, 115),
+                  (105, 100),
                   f"SCENE {index:02d}",
-                  font=small,
-                  fill=(120, 180, 255)
+                  font=small_font,
+                  fill=(110, 185, 255)
               )
 
               # Title.
-              title_text = str(title)
+              title = str(title)
 
-              if len(title_text) > 55:
-                  title_text = (
-                      title_text[:52] + "..."
+              if len(title) > 52:
+
+                  title = (
+                      title[:49]
+                      + "..."
                   )
 
               draw.text(
-                  (110, 170),
-                  title_text,
-                  font=bold,
+                  (105, 155),
+                  title,
+                  font=title_font,
                   fill="white"
               )
 
-              # Main visual text.
+              # Text wrapping.
               words = str(text).split()
 
               lines = []
               line = ""
+
+              max_chars = (
+                  39
+                  if height == 720
+                  else 26
+              )
 
               for word in words:
 
@@ -650,7 +870,7 @@ jobs:
                       line + " " + word
                   ).strip()
 
-                  if len(candidate) > 38:
+                  if len(candidate) > max_chars:
 
                       if line:
                           lines.append(line)
@@ -664,32 +884,61 @@ jobs:
               if line:
                   lines.append(line)
 
-              y = 270
+              y = (
+                  270
+                  if height == 720
+                  else 300
+              )
 
-              for line in lines[:5]:
+              line_gap = (
+                  46
+                  if height == 720
+                  else 38
+              )
+
+              for line in lines[:6]:
 
                   draw.text(
-                      (115, y),
+                      (110, y),
                       line,
-                      font=regular,
+                      font=text_font,
                       fill=(215, 225, 240)
                   )
 
-                  y += 48
+                  y += line_gap
 
-              # Bottom branding.
+              # Decorative circuit bars.
+              for j in range(5):
+
+                  x = (
+                      105 +
+                      j * 150
+                  )
+
+                  bar_height = (
+                      25 +
+                      ((index + j * 3)
+                       % 100)
+                  )
+
+                  draw.rounded_rectangle(
+                      [
+                          x,
+                          height - 155,
+                          x + 75,
+                          height - 155 +
+                          bar_height
+                      ],
+                      radius=8,
+                      fill=(45, 105, 180)
+                  )
+
+              # Branding.
               draw.text(
-                  (110, height - 135),
+                  (105, height - 72),
                   "TECHMIND AI",
-                  font=small,
-                  fill=(120, 180, 255)
-              )
-
-              draw.text(
-                  (width - 330, height - 135),
-                  "AI • TECHNOLOGY • FUTURE",
-                  font=small,
-                  fill=(150, 160, 175)
+                  font=small_font,
+                  fill=(115, 190, 255)
               )
 
               img.save(
@@ -699,10 +948,13 @@ jobs:
 
 
           # ============================================================
-          # VOICE
+          # TTS
           # ============================================================
 
-          def create_voice(text, output):
+          def create_voice(
+              text,
+              output
+          ):
 
               run([
                   "edge-tts",
@@ -715,15 +967,17 @@ jobs:
                   str(output)
               ])
 
-              if not Path(output).exists():
+              if not Path(
+                  output
+              ).exists():
 
                   raise RuntimeError(
-                      "Voice file missing."
+                      "Voice file was not created."
                   )
 
 
           # ============================================================
-          # DURATION
+          # MEDIA DURATION
           # ============================================================
 
           def duration(path):
@@ -744,38 +998,63 @@ jobs:
                   text=True
               )
 
-              return float(
+              value = (
                   result.stdout.strip()
               )
 
+              if not value:
+
+                  raise RuntimeError(
+                      f"Could not determine duration: "
+                      f"{path}"
+                  )
+
+              return float(value)
+
 
           # ============================================================
-          # SRT CAPTIONS
+          # SRT
           # ============================================================
 
-          def srt_time(sec):
+          def srt_time(seconds):
 
-              sec = max(0, float(sec))
-
-              h = int(sec // 3600)
-
-              m = int(
-                  (sec % 3600) // 60
+              seconds = max(
+                  0,
+                  float(seconds)
               )
 
-              s = int(sec % 60)
+              hours = int(
+                  seconds // 3600
+              )
 
-              ms = int(
-                  (sec - int(sec)) * 1000
+              minutes = int(
+                  (seconds % 3600) // 60
+              )
+
+              secs = int(
+                  seconds % 60
+              )
+
+              millis = int(
+                  (
+                      seconds -
+                      int(seconds)
+                  ) * 1000
               )
 
               return (
-                  f"{h:02d}:{m:02d}:{s:02d},"
-                  f"{ms:03d}"
+                  f"{hours:02d}:"
+                  f"{minutes:02d}:"
+                  f"{secs:02d},"
+                  f"{millis:03d}"
               )
 
 
-          def create_srt(script, total, output):
+          def create_srt(
+              script,
+              total,
+              output
+          ):
 
               sentences = re.split(
                   r"(?<=[.!?])\s+",
@@ -791,17 +1070,17 @@ jobs:
               if not sentences:
                   return
 
-              word_total = sum(
+              total_words = sum(
                   len(x.split())
                   for x in sentences
               )
 
-              current = 0
-
+              current = 0.0
               rows = []
 
               for i, sentence in enumerate(
-                  sentences
+                  sentences,
+                  start=1
               ):
 
                   words = len(
@@ -811,7 +1090,10 @@ jobs:
                   part = (
                       total *
                       words /
-                      max(word_total, 1)
+                      max(
+                          total_words,
+                          1
+                      )
                   )
 
                   start = current
@@ -821,7 +1103,7 @@ jobs:
                   )
 
                   rows.append(
-                      f"{i+1}\n"
+                      f"{i}\n"
                       f"{srt_time(start)} --> "
                       f"{srt_time(end)}\n"
                       f"{sentence}\n"
@@ -829,52 +1111,60 @@ jobs:
 
                   current = end
 
-              Path(output).write_text(
+              Path(
+                  output
+              ).write_text(
                   "\n".join(rows),
                   encoding="utf-8"
               )
 
 
           # ============================================================
-          # SCENE VIDEO
+          # LONG SCENE VIDEO
           # ============================================================
 
-          def make_scene(
+          def make_long_scene(
               image,
               audio,
               output,
               index
           ):
 
-              dur = duration(audio)
+              audio_duration = duration(
+                  audio
+              )
 
               frames = max(
                   30,
-                  int(dur * 30)
+                  int(
+                      audio_duration * 30
+                  )
               )
 
-              # Alternating zoom direction.
               if index % 2 == 0:
 
                   zoom = (
                       "zoompan="
-                      "z='min(zoom+0.0010,1.12)':"
+                      "z='min(zoom+0.0009,1.12)':"
                       "x='iw/2-(iw/zoom/2)':"
                       "y='ih/2-(ih/zoom/2)':"
                       f"d={frames}:"
-                      "s=1280x720:fps=30"
+                      "s=1280x720:"
+                      "fps=30"
                   )
 
               else:
 
                   zoom = (
                       "zoompan="
-                      "z='if(lte(zoom,1.001),1.12,"
-                      "max(1.0,zoom-0.0010))':"
+                      "z='if(lte(zoom,1.001),"
+                      "1.12,max(1.0,"
+                      "zoom-0.0009))':"
                       "x='iw/2-(iw/zoom/2)':"
                       "y='ih/2-(ih/zoom/2)':"
                       f"d={frames}:"
-                      "s=1280x720:fps=30"
+                      "s=1280x720:"
+                      "fps=30"
                   )
 
               run([
@@ -889,7 +1179,7 @@ jobs:
                   "-vf",
                   zoom,
                   "-t",
-                  str(dur),
+                  str(audio_duration),
                   "-c:v",
                   "libx264",
                   "-preset",
@@ -908,13 +1198,17 @@ jobs:
 
 
           # ============================================================
-          # CONCAT VIDEO
+          # CONCAT
           # ============================================================
 
-          def concat(files, output):
+          def concat(
+              files,
+              output
+          ):
 
               list_file = (
-                  ROOT / "concat.txt"
+                  ROOT /
+                  "concat.txt"
               )
 
               with open(
@@ -925,11 +1219,13 @@ jobs:
 
                   for file in files:
 
+                      path = Path(
+                          file
+                      ).resolve()
+
                       f.write(
                           "file '"
-                          + str(
-                              Path(file).resolve()
-                          )
+                          + str(path)
                           + "'\n"
                       )
 
@@ -949,17 +1245,29 @@ jobs:
 
 
           # ============================================================
-          # LONG VIDEO
+          # BUILD LONG VIDEO
           # ============================================================
 
-          def build_long(package):
+          def build_long(
+              package
+          ):
 
-              scenes = package["scenes"]
+              scenes = package[
+                  "scenes"
+              ]
 
-              files = []
+              scene_files = []
 
               print(
-                  "\nCREATING 10 VISUAL SCENES\n"
+                  "\n================================"
+              )
+
+              print(
+                  "CREATING LONG VIDEO"
+              )
+
+              print(
+                  "================================"
               )
 
               for i, scene in enumerate(
@@ -967,9 +1275,24 @@ jobs:
                   start=1
               ):
 
-                  print(
-                      f"\n--- SCENE {i}/10 ---"
+                  voice_words = len(
+                      scene[
+                          "voiceover"
+                      ].split()
                   )
+
+                  print(
+                      f"\nSCENE {i}/10 "
+                      f"WORDS={voice_words}"
+                  )
+
+                  if voice_words < 50:
+
+                      raise RuntimeError(
+                          f"Scene {i} voiceover "
+                          f"is too short: "
+                          f"{voice_words} words."
+                      )
 
                   image = (
                       VISUAL_DIR /
@@ -987,25 +1310,33 @@ jobs:
                   )
 
                   create_visual(
-                      scene["visual_title"],
-                      scene["visual_text"],
+                      scene[
+                          "visual_title"
+                      ],
+                      scene[
+                          "visual_text"
+                      ],
                       i,
                       image
                   )
 
                   create_voice(
-                      scene["voiceover"],
+                      scene[
+                          "voiceover"
+                      ],
                       audio
                   )
 
-                  make_scene(
+                  make_long_scene(
                       image,
                       audio,
                       video,
                       i
                   )
 
-                  files.append(video)
+                  scene_files.append(
+                      video
+                  )
 
               raw = (
                   ROOT /
@@ -1013,7 +1344,7 @@ jobs:
               )
 
               concat(
-                  files,
+                  scene_files,
                   raw
               )
 
@@ -1042,33 +1373,78 @@ jobs:
                   str(final)
               ])
 
-              # Captions file.
-              srt = ROOT / "captions.srt"
+              # Captions.
+              srt = (
+                  ROOT /
+                  "captions.srt"
+              )
 
               create_srt(
-                  package["long_script"],
+                  package[
+                      "long_script"
+                  ],
                   duration(final),
                   srt
               )
+
+              final_duration = duration(
+                  final
+              )
+
+              print(
+                  "\nFINAL LONG DURATION:",
+                  round(
+                      final_duration,
+                      2
+                  ),
+                  "seconds"
+              )
+
+              # 4 minutes minimum.
+              if final_duration < 240:
+
+                  raise RuntimeError(
+                      "Long video is below "
+                      "4 minutes: "
+                      f"{final_duration:.1f}s"
+                  )
+
+              # 5.5 minutes upper warning.
+              if final_duration > 330:
+
+                  print(
+                      "WARNING: Long video "
+                      "is above 5.5 minutes."
+                  )
 
               return final
 
 
           # ============================================================
-          # SHORT
+          # BUILD SHORT
           # ============================================================
 
-          def build_short(package):
-
-              print(
-                  "\nCREATING SHORT\n"
-              )
+          def build_short(
+              package
+          ):
 
               scenes = package[
                   "short_scenes"
               ][:5]
 
               files = []
+
+              print(
+                  "\n================================"
+              )
+
+              print(
+                  "CREATING SHORT"
+              )
+
+              print(
+                  "================================"
+              )
 
               for i, scene in enumerate(
                   scenes,
@@ -1091,8 +1467,12 @@ jobs:
                   )
 
                   create_visual(
-                      scene["visual_title"],
-                      scene["visual_text"],
+                      scene[
+                          "visual_title"
+                      ],
+                      scene[
+                          "visual_text"
+                      ],
                       i,
                       image,
                       720,
@@ -1100,11 +1480,15 @@ jobs:
                   )
 
                   create_voice(
-                      scene["voiceover"],
+                      scene[
+                          "voiceover"
+                      ],
                       audio
                   )
 
-                  dur = duration(audio)
+                  dur = duration(
+                      audio
+                  )
 
                   frames = max(
                       30,
@@ -1122,7 +1506,8 @@ jobs:
                       "x='iw/2-(iw/zoom/2)':"
                       "y='ih/2-(ih/zoom/2)':"
                       f"d={frames}:"
-                      "s=720x1280:fps=30"
+                      "s=720x1280:"
+                      "fps=30"
                   )
 
                   run([
@@ -1154,7 +1539,9 @@ jobs:
                       str(video)
                   ])
 
-                  files.append(video)
+                  files.append(
+                      video
+                  )
 
               raw = (
                   SHORT_DIR /
@@ -1191,6 +1578,25 @@ jobs:
                   str(final)
               ])
 
+              short_duration = duration(
+                  final
+              )
+
+              print(
+                  "SHORT DURATION:",
+                  round(
+                      short_duration,
+                      2
+                  ),
+                  "seconds"
+              )
+
+              if short_duration < 20:
+
+                  raise RuntimeError(
+                      "Short is below 20 seconds."
+                  )
+
               return final
 
 
@@ -1198,7 +1604,9 @@ jobs:
           # THUMBNAIL
           # ============================================================
 
-          def thumbnail(package):
+          def create_thumbnail(
+              package
+          ):
 
               output = (
                   THUMB_DIR /
@@ -1208,14 +1616,16 @@ jobs:
               img = Image.new(
                   "RGB",
                   (1280, 720),
-                  (8, 14, 28)
+                  (7, 13, 28)
               )
 
-              draw = ImageDraw.Draw(img)
+              draw = ImageDraw.Draw(
+                  img
+              )
 
               title_font = ImageFont.truetype(
                   FONT_BOLD,
-                  72
+                  70
               )
 
               small_font = ImageFont.truetype(
@@ -1223,22 +1633,27 @@ jobs:
                   30
               )
 
-              # Large tech circles.
-              for i in range(12):
+              # Background tech network.
+              for i in range(15):
 
                   x = (
-                      (i * 137 + 150)
-                      % 1280
+                      50 +
+                      (
+                          i * 113
+                      ) % 1180
                   )
 
                   y = (
-                      (i * 83 + 80)
-                      % 720
+                      60 +
+                      (
+                          i * 79
+                      ) % 580
                   )
 
-                  r = 35 + (
-                      i % 4
-                  ) * 15
+                  r = (
+                      25 +
+                      (i % 5) * 12
+                  )
 
                   draw.ellipse(
                       [
@@ -1247,50 +1662,71 @@ jobs:
                           x+r,
                           y+r
                       ],
-                      outline=(70, 130, 230),
-                      width=4
+                      outline=(
+                          60,
+                          130,
+                          230
+                      ),
+                      width=3
                   )
 
-              # Dark overlay panel.
+              # Main panel.
               draw.rounded_rectangle(
-                  (70, 80, 1210, 640),
+                  (65, 65, 1215, 655),
                   radius=35,
                   fill=(5, 9, 18),
-                  outline=(80, 140, 230),
+                  outline=(
+                      80,
+                      140,
+                      230
+                  ),
                   width=3
               )
 
-              title = package["title"]
+              title = package[
+                  "title"
+              ]
 
-              if len(title) > 52:
+              if len(title) > 55:
+
                   title = (
-                      title[:49] + "..."
+                      title[:52]
+                      + "..."
                   )
 
-              # Wrap title.
+              # Wrap.
               words = title.split()
+
               lines = []
-              line = ""
+              current = ""
 
               for word in words:
 
                   candidate = (
-                      line + " " + word
+                      current
+                      + " "
+                      + word
                   ).strip()
 
-                  if len(candidate) > 24:
+                  if len(candidate) > 25:
 
-                      lines.append(line)
-                      line = word
+                      if current:
+                          lines.append(
+                              current
+                          )
+
+                      current = word
 
                   else:
 
-                      line = candidate
+                      current = candidate
 
-              if line:
-                  lines.append(line)
+              if current:
+                  lines.append(
+                      current
+                  )
 
-              y = 190
+              y = 180
 
               for line in lines[:4]:
 
@@ -1300,10 +1736,16 @@ jobs:
                       font=title_font
                   )
 
-                  w = bbox[2] - bbox[0]
+                  text_width = (
+                      bbox[2] - bbox[0]
+                  )
 
                   draw.text(
-                      ((1280-w)/2, y),
+                      (
+                          (1280 -
+                           text_width) / 2,
+                          y
+                      ),
                       line,
                       font=title_font,
                       fill="white",
@@ -1314,10 +1756,14 @@ jobs:
                   y += 90
 
               draw.text(
-                  (100, 570),
+                  (100, 575),
                   "TECHMIND AI",
                   font=small_font,
-                  fill=(110, 180, 255)
+                  fill=(
+                      110,
+                      185,
+                      255
+                  )
               )
 
               img.save(
@@ -1329,20 +1775,21 @@ jobs:
 
 
           # ============================================================
-          # YOUTUBE
+          # YOUTUBE CLIENT
           # ============================================================
 
-          def youtube():
+          def youtube_client():
 
-              info = json.loads(
+              token = json.loads(
                   os.environ[
                       "YOUTUBE_TOKEN_JSON"
                   ]
               )
 
               credentials = (
-                  Credentials.from_authorized_user_info(
-                      info,
+                  Credentials
+                  .from_authorized_user_info(
+                      token,
                       scopes=[
                           "https://www.googleapis.com/"
                           "auth/youtube.upload"
@@ -1357,14 +1804,23 @@ jobs:
               )
 
 
-          def upload(
+          # ============================================================
+          # YOUTUBE UPLOAD
+          # ============================================================
+
+          def upload_video(
               api,
               path,
               title,
               description,
               tags,
-              thumbnail_path=None
+              thumbnail=None
           ):
+
+              print(
+                  "\nUPLOADING:",
+                  path
+              )
 
               body = {
                   "snippet": {
@@ -1385,10 +1841,12 @@ jobs:
                   resumable=True
               )
 
-              request = api.videos().insert(
-                  part="snippet,status",
-                  body=body,
-                  media_body=media
+              request = (
+                  api.videos().insert(
+                      part="snippet,status",
+                      body=body,
+                      media_body=media
+                  )
               )
 
               response = None
@@ -1404,26 +1862,29 @@ jobs:
                       print(
                           "UPLOAD:",
                           int(
-                              status.progress() * 100
+                              status.progress()
+                              * 100
                           ),
                           "%"
                       )
 
-              video_id = response["id"]
+              video_id = response[
+                  "id"
+              ]
 
               print(
                   "UPLOAD SUCCESS:",
                   video_id
               )
 
-              if thumbnail_path:
+              if thumbnail:
 
                   try:
 
                       api.thumbnails().set(
                           videoId=video_id,
                           media_body=MediaFileUpload(
-                              str(thumbnail_path),
+                              str(thumbnail),
                               mimetype="image/jpeg"
                           )
                       ).execute()
@@ -1435,7 +1896,7 @@ jobs:
                   except Exception as e:
 
                       print(
-                          "Thumbnail warning:",
+                          "THUMBNAIL WARNING:",
                           e
                       )
 
@@ -1449,7 +1910,7 @@ jobs:
           def main():
 
               print(
-                  "\n================================"
+                  "\n======================================"
               )
 
               print(
@@ -1457,7 +1918,7 @@ jobs:
               )
 
               print(
-                  "================================\n"
+                  "======================================"
               )
 
               package = create_package()
@@ -1484,7 +1945,8 @@ jobs:
 
               # Save metadata.
               (
-                  ROOT / "metadata.json"
+                  ROOT /
+                  "metadata.json"
               ).write_text(
                   json.dumps(
                       package,
@@ -1505,63 +1967,28 @@ jobs:
               )
 
               # Thumbnail.
-              thumb = thumbnail(
+              thumb = create_thumbnail(
                   package
               )
 
-              long_duration = duration(
-                  long_video
-              )
+              # YouTube.
+              api = youtube_client()
 
-              short_duration = duration(
-                  short_video
-              )
-
-              print(
-                  f"\nLONG DURATION: "
-                  f"{long_duration:.1f}s"
-              )
-
-              print(
-                  f"SHORT DURATION: "
-                  f"{short_duration:.1f}s"
-              )
-
-              if long_duration < 180:
-
-                  raise RuntimeError(
-                      "Long video is below 3 minutes."
-                  )
-
-              if short_duration < 20:
-
-                  raise RuntimeError(
-                      "Short is too short."
-                  )
-
-              # Upload.
-              api = youtube()
-
-              description = package[
-                  "description"
-              ]
-
-              long_id = upload(
+              long_id = upload_video(
                   api,
                   long_video,
                   package["title"],
-                  description,
+                  package["description"],
                   package["tags"],
                   thumb
               )
 
               short_description = (
                   package["description"]
-                  + "\n\n"
-                  + " #Shorts"
+                  + "\n\n#Shorts"
               )
 
-              short_id = upload(
+              short_id = upload_video(
                   api,
                   short_video,
                   package["short_title"],
@@ -1570,7 +1997,7 @@ jobs:
               )
 
               print(
-                  "\n================================"
+                  "\n======================================"
               )
 
               print(
@@ -1578,17 +2005,17 @@ jobs:
               )
 
               print(
-                  "LONG VIDEO:",
+                  "LONG VIDEO ID:",
                   long_id
               )
 
               print(
-                  "SHORT:",
+                  "SHORT ID:",
                   short_id
               )
 
               print(
-                  "================================"
+                  "======================================"
               )
 
 
@@ -1601,7 +2028,7 @@ jobs:
         run: |
           python creator.py
 
-      - name: Save production files
+      - name: Save production artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
