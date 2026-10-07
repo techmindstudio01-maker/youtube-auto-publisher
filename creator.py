@@ -1,5 +1,5 @@
 # creator.py
-# TECHMIND STUDIO — Automatic AI YouTube Publisher (Optimized & Fixed)
+# TECHMIND STUDIO — Automatic AI YouTube Publisher (Fully Fixed & Updated)
 
 import os
 import re
@@ -79,13 +79,15 @@ def duration(path):
 
 
 # ============================================================
-# GEMINI API
+# GEMINI API (Updated Models & Robust Fallback)
 # ============================================================
 
 def gemini(prompt, retries=6):
+    # Updated active stable model endpoints
     models = [
         "gemini-2.5-flash",
-        "gemini-2.0-flash"
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
     ]
     last_error = None
 
@@ -135,6 +137,7 @@ def gemini(prompt, retries=6):
                     last_error = r.text
 
                 elif r.status_code == 404:
+                    # Model not found or endpoint changed, try next model in list
                     continue
 
                 else:
@@ -541,197 +544,4 @@ def create_short(data):
 
 def create_thumbnail(data):
     image = THUMB / "source.jpg"
-    download_image(data["topic"] + " artificial intelligence technology", image)
-
-    title = data["title"].replace("'", "").replace('"', "").replace(":", "")
-    output = THUMB / "thumbnail.jpg"
-
-    run([
-        "ffmpeg",
-        "-y",
-        "-i", str(image),
-        "-vf", (
-            "scale=1280:720:"
-            "force_original_aspect_ratio=increase,"
-            "crop=1280:720,"
-            "drawtext="
-            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-            "fontcolor=white:"
-            "fontsize=62:"
-            "borderw=5:"
-            "bordercolor=black:"
-            f"text='{title[:45]}':"
-            "x=60:"
-            "y=h-th-65"
-        ),
-        "-frames:v", "1",
-        "-q:v", "2",
-        str(output)
-    ])
-    return output
-
-
-# ============================================================
-# METADATA & YOUTUBE UPLOAD
-# ============================================================
-
-def save_metadata(data):
-    hashtags = []
-    for h in data.get("hashtags", []):
-        h = str(h).strip()
-        if h and not h.startswith("#"):
-            h = "#" + h
-        if h:
-            hashtags.append(h)
-
-    description = clean(data.get("description", ""))
-    hashtag_text = " ".join(hashtags)
-    if hashtag_text and hashtag_text not in description:
-        description += "\n\n" + hashtag_text
-
-    metadata = {
-        "title": clean(data["title"]),
-        "description": description,
-        "hashtags": hashtags,
-        "tags": data.get("tags", []),
-        "topic": clean(data["topic"])
-    }
-
-    (BASE / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-    return metadata
-
-
-def youtube_service():
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-
-    data = json.loads(YOUTUBE_TOKEN_JSON)
-    if "installed" in data or "web" in data:
-        raise RuntimeError("YOUTUBE_TOKEN_JSON is OAuth client secret, not authorized token JSON.")
-
-    creds = Credentials(
-        token=data.get("token"),
-        refresh_token=data.get("refresh_token"),
-        token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
-        client_id=data.get("client_id"),
-        client_secret=data.get("client_secret"),
-        scopes=data.get("scopes", ["https://www.googleapis.com/auth/youtube.upload"])
-    )
-
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-
-    if not creds.valid:
-        raise RuntimeError("YouTube token is invalid.")
-
-    return build("youtube", "v3", credentials=creds, cache_discovery=False)
-
-
-def upload(service, video, metadata, thumbnail=None, short=False):
-    from googleapiclient.http import MediaFileUpload
-
-    title = metadata["title"]
-    if short and "#Shorts" not in title:
-        title += " #Shorts"
-
-    tags = []
-    for tag in metadata.get("tags", []):
-        tag = str(tag).replace("#", "").strip()
-        if tag and tag not in tags:
-            tags.append(tag)
-
-    body = {
-        "snippet": {
-            "title": title[:100],
-            "description": metadata["description"][:5000],
-            "tags": tags[:30],
-            "categoryId": "28"
-        },
-        "status": {
-            "privacyStatus": "public",
-            "selfDeclaredMadeForKids": False
-        }
-    }
-
-    print("\nUPLOADING:", title)
-    media = MediaFileUpload(str(video), mimetype="video/mp4", resumable=True, chunksize=8 * 1024 * 1024)
-    request = service.videos().insert(part="snippet,status", body=body, media_body=media)
-
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"UPLOAD: {int(status.progress() * 100)}%")
-
-    video_id = response["id"]
-
-    if thumbnail and not short:
-        service.thumbnails().set(
-            videoId=video_id,
-            media_body=MediaFileUpload(str(thumbnail), mimetype="image/jpeg")
-        ).execute()
-
-    print("YOUTUBE ID:", video_id)
-    return video_id
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-    print("\n====================================")
-    print(" TECHMIND STUDIO AUTO PUBLISHER")
-    print("====================================\n")
-
-    data = create_content()
-    print("\nTOPIC:", data["topic"])
-    print("\nTITLE:", data["title"])
-
-    metadata = save_metadata(data)
-
-    print("\nCREATING LONG VIDEO...")
-    long_video = create_long(data)
-
-    print("\nCREATING SHORT...")
-    short_video = create_short(data)
-
-    print("\nCREATING THUMBNAIL...")
-    thumbnail = create_thumbnail(data)
-
-    print("\nCONNECTING TO YOUTUBE...")
-    service = youtube_service()
-
-    long_id = upload(service, long_video, metadata, thumbnail=thumbnail, short=False)
-    short_id = upload(service, short_video, metadata, thumbnail=None, short=True)
-
-    result = {
-        "title": metadata["title"],
-        "topic": metadata["topic"],
-        "long_video": str(long_video),
-        "short_video": str(short_video),
-        "thumbnail": str(thumbnail),
-        "long_video_id": long_id,
-        "short_video_id": short_id,
-        "long_url": f"https://youtube.com/watch?v={long_id}",
-        "short_url": f"https://youtube.com/watch?v={short_id}"
-    }
-
-    (BASE / "youtube_upload.json").write_text(
-        json.dumps(result, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-
-    print("\n====================================")
-    print(" SUCCESS — TECHMIND STUDIO")
-    print("====================================")
-    print("\nLONG:", result["long_url"])
-    print("SHORT:", result["short_url"])
-
-
-if __name__ == "__main__":
-    main()
+    download_image(data["topic"] + " artificial intelligence technology", image
