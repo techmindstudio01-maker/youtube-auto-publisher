@@ -13,1226 +13,1581 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      PYTHONUNBUFFERED: "1"
+
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system tools
+      - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu
 
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install requests pillow edge-tts \
+          pip install \
+            google-genai \
             google-api-python-client \
             google-auth \
-            google-auth-httplib2 \
-            google-auth-oauthlib
+            google-auth-oauthlib \
+            edge-tts \
+            feedparser \
+            requests \
+            pillow
 
-      - name: Create and publish
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      - name: Create creator.py
         run: |
-
           cat > creator.py <<'PY'
           import os
           import re
           import json
           import time
-          import base64
+          import math
+          import random
           import subprocess
-          import requests
-          import xml.etree.ElementTree as ET
           from pathlib import Path
+          from datetime import datetime, timezone
+
+          import requests
+          import feedparser
           from PIL import Image, ImageDraw, ImageFont
-          from google.oauth2.credentials import Credentials
-          from google.auth.transport.requests import Request
+
+          from google import genai
+          from google.genai import types
+
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
+          from google.oauth2.credentials import Credentials
 
-          GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-          TOKEN_JSON = os.environ["YOUTUBE_TOKEN_JSON"]
 
-          # Current text models, with fallback.
-          TEXT_MODELS = [
-              "gemini-3.8-flash",
-              "gemini-3.5-flash-lite",
-              "gemini-2.5-flash"
-          ]
-
-          # Current Gemini image-generation model.
-          IMAGE_MODEL = "gemini-nano-banana-2.1"
+          # ============================================================
+          # CONFIG
+          # ============================================================
 
           ROOT = Path("production")
           LONG_DIR = ROOT / "long"
           SHORT_DIR = ROOT / "short"
+          AUDIO_DIR = ROOT / "audio"
+          THUMB_DIR = ROOT / "thumbnail"
 
-          LONG_DIR.mkdir(parents=True, exist_ok=True)
-          SHORT_DIR.mkdir(parents=True, exist_ok=True)
+          for d in [LONG_DIR, SHORT_DIR, AUDIO_DIR, THUMB_DIR]:
+              d.mkdir(parents=True, exist_ok=True)
 
-          def run(cmd):
+          GEMINI_KEY = os.environ["GEMINI_API_KEY"]
+
+          TEXT_MODELS = [
+              "gemini-3.5-flash-lite",
+              "gemini-2.5-flash",
+          ]
+
+          IMAGE_MODELS = [
+              "gemini-3.1-flash-lite-image",
+              "gemini-3.1-flash-image",
+          ]
+
+          VOICE = "en-US-GuyNeural"
+
+          # Number of visual scenes.
+          LONG_SCENES = 10
+          SHORT_SCENES = 5
+
+          # ============================================================
+          # HELPERS
+          # ============================================================
+
+          def clean_json(text):
+              text = text.strip()
+
+              if text.startswith("```"):
+                  text = re.sub(r"^```(?:json)?", "", text)
+                  text = re.sub(r"```$", "", text)
+                  text = text.strip()
+
+              start = text.find("{")
+              end = text.rfind("}")
+
+              if start >= 0 and end >= 0:
+                  return text[start:end + 1]
+
+              raise ValueError("No JSON object found.")
+
+          def safe_filename(text):
+              text = re.sub(r"[^a-zA-Z0-9_-]+", "_", text)
+              return text[:80].strip("_")
+
+          def run_cmd(cmd, check=True):
               print("RUN:", " ".join(map(str, cmd)))
-              p = subprocess.run(
+
+              result = subprocess.run(
                   cmd,
                   stdout=subprocess.PIPE,
                   stderr=subprocess.STDOUT,
                   text=True
               )
-              print(p.stdout[-5000:])
-              if p.returncode != 0:
+
+              print(result.stdout[-6000:])
+
+              if check and result.returncode != 0:
                   raise RuntimeError(
-                      "Command failed: " + " ".join(map(str, cmd))
+                      f"Command failed: {result.returncode}"
                   )
-              return p.stdout
 
-          def duration(path):
-              out = run([
-                  "ffprobe", "-v", "error",
-                  "-show_entries", "format=duration",
-                  "-of", "default=noprint_wrappers=1:nokey=1",
-                  str(path)
-              ])
-              return float(out.strip())
+              return result
 
-          def clean(s):
-              return re.sub(r"\s+", " ", str(s or "")).strip()
 
-          # ==========================================================
-          # GEMINI TEXT WITH FALLBACKS
-          # ==========================================================
+          # ============================================================
+          # FRESH AI TOPIC
+          # ============================================================
+
+          def get_fresh_topics():
+              feeds = [
+                  "https://news.google.com/rss/search?q=AI+artificial+intelligence&hl=en-US&gl=US&ceid=US:en",
+                  "https://news.google.com/rss/search?q=generative+AI&hl=en-US&gl=US&ceid=US:en",
+                  "https://news.google.com/rss/search?q=OpenAI+Google+Gemini+AI&hl=en-US&gl=US&ceid=US:en",
+              ]
+
+              topics = []
+
+              for url in feeds:
+                  try:
+                      feed = feedparser.parse(url)
+
+                      for entry in feed.entries[:10]:
+                          title = getattr(entry, "title", "")
+                          summary = getattr(entry, "summary", "")
+
+                          if title:
+                              topics.append({
+                                  "title": title,
+                                  "summary": re.sub(
+                                      "<[^>]+>",
+                                      "",
+                                      summary
+                                  )[:1000]
+                              })
+
+                  except Exception as e:
+                      print("RSS error:", e)
+
+              # Remove duplicates
+              unique = []
+              seen = set()
+
+              for item in topics:
+                  key = item["title"].lower().strip()
+
+                  if key not in seen:
+                      seen.add(key)
+                      unique.append(item)
+
+              return unique[:25]
+
+
+          # ============================================================
+          # GEMINI TEXT
+          # ============================================================
 
           def gemini_text(prompt):
+              client = genai.Client(api_key=GEMINI_KEY)
 
               last_error = None
 
               for model in TEXT_MODELS:
 
-                  for attempt in range(6):
+                  for attempt in range(1, 7):
 
                       print(
                           f"TEXT MODEL={model} "
-                          f"ATTEMPT={attempt+1}/6"
+                          f"ATTEMPT={attempt}/6"
                       )
-
-                      url = (
-                          "https://generativelanguage.googleapis.com/"
-                          "v1beta/models/"
-                          + model +
-                          ":generateContent"
-                      )
-
-                      payload = {
-                          "contents": [{
-                              "parts": [{
-                                  "text": prompt
-                              }]
-                          }],
-                          "generationConfig": {
-                              "temperature": 0.75,
-                              "responseMimeType": "application/json"
-                          }
-                      }
 
                       try:
-
-                          r = requests.post(
-                              url,
-                              headers={
-                                  "x-goog-api-key": GEMINI_KEY,
-                                  "Content-Type": "application/json"
-                              },
-                              json=payload,
-                              timeout=120
-                          )
-
-                          print("STATUS:", r.status_code)
-
-                          if r.status_code in [429, 500, 502, 503, 504]:
-                              wait = min(60, 8 * (attempt + 1))
-                              print(
-                                  f"Temporary Gemini error. "
-                                  f"Waiting {wait}s..."
+                          response = client.models.generate_content(
+                              model=model,
+                              contents=prompt,
+                              config=types.GenerateContentConfig(
+                                  temperature=0.8,
+                                  max_output_tokens=12000,
                               )
-                              time.sleep(wait)
-                              continue
+                          )
 
-                          if r.status_code in [400, 401, 403, 404]:
+                          text = response.text
+
+                          if text and len(text.strip()) > 100:
                               print(
-                                  "Model/API rejected request:",
-                                  r.text[:1000]
+                                  f"TEXT SUCCESS: {model}"
                               )
-                              break
+                              return text
 
-                          r.raise_for_status()
-
-                          data = r.json()
-
-                          text = (
-                              data["candidates"][0]
-                              ["content"]["parts"][0]["text"]
-                          ).strip()
-
-                          text = re.sub(
-                              r"^```json\s*",
-                              "",
-                              text,
-                              flags=re.I
+                          raise RuntimeError(
+                              "Empty Gemini response."
                           )
-                          text = re.sub(
-                              r"^```\s*",
-                              "",
-                              text
-                          )
-                          text = re.sub(
-                              r"\s*```$",
-                              "",
-                              text
-                          ).strip()
-
-                          return json.loads(text)
 
                       except Exception as e:
                           last_error = e
-                          print("ERROR:", repr(e))
-                          time.sleep(
-                              min(60, 8 * (attempt + 1))
+
+                          print(
+                              "TEXT ERROR:",
+                              type(e).__name__,
+                              str(e)[:500]
                           )
+
+                          error = str(e).lower()
+
+                          retryable = any(
+                              x in error
+                              for x in [
+                                  "429",
+                                  "500",
+                                  "502",
+                                  "503",
+                                  "504",
+                                  "timeout",
+                                  "timed out",
+                                  "unavailable",
+                                  "resource_exhausted",
+                                  "deadline_exceeded"
+                              ]
+                          )
+
+                          if retryable:
+                              wait = min(
+                                  60,
+                                  5 * (2 ** (attempt - 1))
+                              )
+
+                              print(
+                                  f"Waiting {wait}s..."
+                              )
+
+                              time.sleep(wait)
+
+                              continue
+
+                          break
 
                   print(
                       f"Model {model} exhausted. "
-                      f"Trying next model."
+                      "Trying next model."
                   )
 
               raise RuntimeError(
-                  "All Gemini text models failed: "
-                  + repr(last_error)
+                  f"Gemini text generation failed: "
+                  f"{last_error}"
               )
 
-          # ==========================================================
-          # FRESH AI TOPICS
-          # ==========================================================
 
-          def get_news():
+          # ============================================================
+          # IMAGE GENERATION
+          # ============================================================
 
-              feeds = [
-                  "https://news.google.com/rss/search?"
-                  "q=AI+artificial+intelligence+when:1d"
-                  "&hl=en-US&gl=US&ceid=US:en",
+          def generate_image(prompt, output_path, aspect_ratio="16:9"):
 
-                  "https://news.google.com/rss/search?"
-                  "q=generative+AI+technology+when:1d"
-                  "&hl=en-US&gl=US&ceid=US:en",
-
-                  "https://news.google.com/rss/search?"
-                  "q=AI+tools+technology+when:1d"
-                  "&hl=en-US&gl=US&ceid=US:en"
-              ]
-
-              results = []
-
-              for url in feeds:
-                  try:
-                      r = requests.get(
-                          url,
-                          timeout=30,
-                          headers={
-                              "User-Agent":
-                              "Mozilla/5.0"
-                          }
-                      )
-                      r.raise_for_status()
-
-                      root = ET.fromstring(r.text)
-
-                      for item in root.findall(".//item")[:12]:
-                          title = clean(
-                              item.findtext("title") or ""
-                          )
-                          link = (
-                              item.findtext("link") or ""
-                          )
-                          desc = clean(
-                              item.findtext(
-                                  "description"
-                              ) or ""
-                          )
-
-                          if title:
-                              results.append({
-                                  "title": title,
-                                  "description": desc[:700],
-                                  "link": link
-                              })
-
-                  except Exception as e:
-                      print("NEWS ERROR:", repr(e))
-
-              seen = set()
-              unique = []
-
-              for x in results:
-                  key = x["title"].lower()
-                  if key not in seen:
-                      seen.add(key)
-                      unique.append(x)
-
-              return unique[:30]
-
-          news = get_news()
-
-          if not news:
-              raise RuntimeError(
-                  "No fresh AI news available."
+              output_path = Path(output_path)
+              output_path.parent.mkdir(
+                  parents=True,
+                  exist_ok=True
               )
 
-          prompt = f"""
-          You are a professional YouTube technology producer.
-
-          Channel: TechMind.
-
-          Select ONE strong current AI/technology topic from this
-          fresh news list:
-
-          {json.dumps(news, ensure_ascii=False)}
-
-          Create a complete production package.
-
-          REQUIREMENTS:
-
-          LONG VIDEO:
-          - 4 to 5 minutes.
-          - 650-750 spoken words.
-          - 7 distinct scenes.
-          - Strong curiosity hook immediately.
-          - Natural conversational English.
-          - Explain what happened.
-          - Explain why it matters.
-          - Explain how it works.
-          - Give concrete examples.
-          - Explain practical impact.
-          - End with a useful conclusion.
-          - No filler.
-          - No invented facts.
-
-          Every scene must have:
-          scene_number
-          scene_title
-          narration
-          visual_prompt
-
-          VISUAL PROMPTS:
-          Every scene must be visually different.
-          Use cinematic editorial AI/technology imagery.
-          Do not make generic office stock photos.
-          No watermarks.
-          No random logos.
-          No important text inside generated images.
-
-          SHORT:
-          - 35-55 seconds.
-          - 4 scenes.
-          - Fast strong hook.
-          - Vertical 9:16 visuals.
-
-          TITLE:
-          - Clickable but truthful.
-          - Under 90 characters.
-          - One relevant emoji.
-
-          DESCRIPTION:
-          - Professional.
-          - Useful.
-          - Include hashtags.
-
-          TAGS:
-          - 12-15 relevant YouTube tags.
-
-          Return ONLY valid JSON:
-
-          {{
-            "topic": "...",
-            "source_url": "...",
-            "title": "...",
-            "description": "...",
-            "hashtags": ["#AI","#Technology"],
-            "tags": ["AI","artificial intelligence"],
-            "long_scenes": [
-              {{
-                "scene_number": 1,
-                "scene_title": "...",
-                "narration": "...",
-                "visual_prompt": "..."
-              }}
-            ],
-            "short_scenes": [
-              {{
-                "scene_number": 1,
-                "scene_title": "...",
-                "narration": "...",
-                "visual_prompt": "..."
-              }}
-            ]
-          }}
-          """
-
-          package = gemini_text(prompt)
-
-          if len(package.get("long_scenes", [])) < 6:
-              raise RuntimeError(
-                  "AI returned too few long scenes."
+              client = genai.Client(
+                  api_key=GEMINI_KEY
               )
 
-          if len(package.get("short_scenes", [])) < 4:
-              raise RuntimeError(
-                  "AI returned too few short scenes."
-              )
+              last_error = None
 
-          print("TOPIC:", package["topic"])
-          print("TITLE:", package["title"])
+              for model in IMAGE_MODELS:
 
-          # ==========================================================
-          # GEMINI IMAGE GENERATION
-          # ==========================================================
-
-          def generate_image(prompt, output, ratio):
-
-              url = (
-                  "https://generativelanguage.googleapis.com/"
-                  "v1beta/interactions"
-              )
-
-              payload = {
-                  "model": IMAGE_MODEL,
-                  "input": prompt,
-                  "response_format": {
-                      "type": "image",
-                      "mime_type": "image/jpeg",
-                      "aspect_ratio": ratio,
-                      "image_size": "1K"
-                  }
-              }
-
-              for attempt in range(6):
-
-                  print(
-                      "IMAGE",
-                      output,
-                      "ATTEMPT",
-                      attempt + 1
-                  )
-
-                  try:
-
-                      r = requests.post(
-                          url,
-                          headers={
-                              "x-goog-api-key": GEMINI_KEY,
-                              "Content-Type": "application/json"
-                          },
-                          json=payload,
-                          timeout=240
-                      )
+                  for attempt in range(1, 7):
 
                       print(
-                          "IMAGE STATUS:",
-                          r.status_code
+                          f"IMAGE MODEL={model} "
+                          f"FILE={output_path} "
+                          f"ATTEMPT={attempt}/6"
                       )
 
-                      if r.status_code in [
-                          429, 500, 502, 503, 504
-                      ]:
-                          time.sleep(
-                              min(60, 10 * (attempt + 1))
-                          )
-                          continue
+                      try:
 
-                      r.raise_for_status()
-
-                      data = r.json()
-                      image_data = None
-
-                      if data.get("output_image"):
-                          image_data = data[
-                              "output_image"
-                          ].get("data")
-
-                      if not image_data:
-                          for step in data.get(
-                              "steps", []
-                          ):
-                              if step.get(
-                                  "type"
-                              ) == "model_output":
-
-                                  for block in step.get(
-                                      "content", []
-                                  ):
-                                      if block.get(
-                                          "type"
-                                      ) == "image":
-                                          image_data = block.get(
-                                              "data"
-                                          )
-
-                      if not image_data:
-                          raise RuntimeError(
-                              "No image returned."
-                          )
-
-                      with open(
-                          output,
-                          "wb"
-                      ) as f:
-                          f.write(
-                              base64.b64decode(
-                                  image_data
+                          response = client.models.generate_content(
+                              model=model,
+                              contents=prompt,
+                              config=types.GenerateContentConfig(
+                                  response_modalities=["IMAGE"],
+                                  image_config=types.ImageConfig(
+                                      aspect_ratio=aspect_ratio,
+                                      image_size="1K",
+                                  ),
                               )
                           )
 
-                      return
+                          found = False
 
-                  except Exception as e:
-                      print(
-                          "IMAGE ERROR:",
-                          repr(e)
-                      )
-                      time.sleep(
-                          min(60, 10 * (attempt + 1))
-                      )
+                          for part in response.parts:
+
+                              if getattr(
+                                  part,
+                                  "inline_data",
+                                  None
+                              ):
+
+                                  image = part.as_image()
+
+                                  image.save(
+                                      str(output_path)
+                                  )
+
+                                  found = True
+                                  break
+
+                          if found and output_path.exists():
+
+                              size = output_path.stat().st_size
+
+                              if size > 5000:
+
+                                  print(
+                                      f"IMAGE OK: "
+                                      f"{output_path} "
+                                      f"({size} bytes)"
+                                  )
+
+                                  return True
+
+                          raise RuntimeError(
+                              "No usable image returned."
+                          )
+
+                      except Exception as e:
+
+                          last_error = e
+
+                          error = str(e)
+
+                          print(
+                              "IMAGE ERROR:",
+                              type(e).__name__,
+                              error[:500]
+                          )
+
+                          retryable = any(
+                              x.lower() in error.lower()
+                              for x in [
+                                  "429",
+                                  "resource_exhausted",
+                                  "503",
+                                  "500",
+                                  "502",
+                                  "504",
+                                  "timeout",
+                                  "timed out",
+                                  "unavailable",
+                                  "deadline_exceeded"
+                              ]
+                          )
+
+                          if retryable:
+
+                              # Longer backoff for image quota.
+                              wait = min(
+                                  120,
+                                  10 * (2 ** (attempt - 1))
+                              )
+
+                              print(
+                                  f"Temporary image API "
+                                  f"problem. Waiting "
+                                  f"{wait}s..."
+                              )
+
+                              time.sleep(wait)
+
+                              continue
+
+                          print(
+                              "Non-retryable image error. "
+                              "Trying next model."
+                          )
+
+                          break
+
+                  print(
+                      f"Image model {model} exhausted."
+                  )
 
               raise RuntimeError(
-                  "Image generation failed: "
-                  + str(output)
+                  f"Image generation failed: "
+                  f"{output_path}. "
+                  f"Last error: {last_error}"
               )
 
-          # ==========================================================
-          # GENERATE LONG VISUALS
-          # ==========================================================
 
-          for scene in package["long_scenes"]:
+          # ============================================================
+          # FALLBACK VISUAL
+          # ============================================================
 
-              n = int(scene["scene_number"])
+          def create_fallback_image(
+              text,
+              output_path,
+              width=1280,
+              height=720
+          ):
 
-              visual_prompt = f"""
-              Premium cinematic editorial image for an AI
-              technology YouTube documentary.
-
-              Story:
-              {scene["narration"]}
-
-              Visual direction:
-              {scene["visual_prompt"]}
-
-              Requirements:
-              photorealistic,
-              cinematic lighting,
-              strong composition,
-              modern technology journalism,
-              high detail,
-              visually dramatic,
-              16:9 landscape.
-
-              Avoid:
-              generic office stock photos,
-              watermarks,
-              random logos,
-              distorted faces,
-              meaningless text.
-
-              Do not place important text in the image.
-              """
-
-              generate_image(
-                  visual_prompt,
-                  LONG_DIR / f"scene_{n:02d}.jpg",
-                  "16:9"
+              print(
+                  "Creating fallback visual:",
+                  output_path
               )
 
-          # ==========================================================
-          # GENERATE SHORT VISUALS
-          # ==========================================================
-
-          for scene in package["short_scenes"]:
-
-              n = int(scene["scene_number"])
-
-              visual_prompt = f"""
-              Premium cinematic vertical visual for a
-              high-retention AI technology YouTube Short.
-
-              Story:
-              {scene["narration"]}
-
-              Visual direction:
-              {scene["visual_prompt"]}
-
-              Requirements:
-              photorealistic,
-              cinematic,
-              high contrast,
-              modern technology journalism,
-              visually dramatic,
-              9:16 vertical.
-
-              Avoid generic stock photos, watermarks,
-              random logos and meaningless text.
-              """
-
-              generate_image(
-                  visual_prompt,
-                  SHORT_DIR / f"scene_{n:02d}.jpg",
-                  "9:16"
+              img = Image.new(
+                  "RGB",
+                  (width, height),
+                  (12, 16, 24)
               )
 
-          # ==========================================================
+              draw = ImageDraw.Draw(img)
+
+              try:
+                  font_big = ImageFont.truetype(
+                      "/usr/share/fonts/truetype/dejavu/"
+                      "DejaVuSans-Bold.ttf",
+                      64
+                  )
+
+                  font_small = ImageFont.truetype(
+                      "/usr/share/fonts/truetype/dejavu/"
+                      "DejaVuSans.ttf",
+                      30
+                  )
+
+              except Exception:
+                  font_big = None
+                  font_small = None
+
+              words = text.split()
+              lines = []
+              line = ""
+
+              for word in words:
+
+                  test = (line + " " + word).strip()
+
+                  if len(test) > 25:
+                      lines.append(line)
+                      line = word
+                  else:
+                      line = test
+
+              if line:
+                  lines.append(line)
+
+              y = height // 2 - len(lines) * 40
+
+              for line in lines:
+                  box = draw.textbbox(
+                      (0, 0),
+                      line,
+                      font=font_big
+                  )
+
+                  w = box[2] - box[0]
+
+                  draw.text(
+                      ((width - w) / 2, y),
+                      line,
+                      fill="white",
+                      font=font_big
+                  )
+
+                  y += 85
+
+              draw.text(
+                  (50, height - 60),
+                  "TECHMIND AI",
+                  fill="white",
+                  font=font_small
+              )
+
+              img.save(output_path, quality=95)
+
+
+          # ============================================================
           # TTS
-          # ==========================================================
+          # ============================================================
 
-          def tts(text, output):
+          def make_tts(text, output_path):
 
-              run([
+              output_path = Path(output_path)
+
+              run_cmd([
                   "edge-tts",
                   "--voice",
-                  "en-US-GuyNeural",
+                  VOICE,
                   "--rate=-5%",
                   "--text",
-                  clean(text),
+                  text,
                   "--write-media",
+                  str(output_path)
+              ])
+
+              if not output_path.exists():
+                  raise RuntimeError(
+                      "TTS audio was not created."
+                  )
+
+
+          # ============================================================
+          # SRT
+          # ============================================================
+
+          def srt_time(seconds):
+
+              seconds = max(0, float(seconds))
+
+              hours = int(seconds // 3600)
+
+              minutes = int(
+                  (seconds % 3600) // 60
+              )
+
+              secs = int(seconds % 60)
+
+              millis = int(
+                  round((seconds - int(seconds)) * 1000)
+              )
+
+              if millis >= 1000:
+                  secs += 1
+                  millis = 0
+
+              return (
+                  f"{hours:02d}:"
+                  f"{minutes:02d}:"
+                  f"{secs:02d},"
+                  f"{millis:03d}"
+              )
+
+
+          def create_srt(script, duration, output):
+
+              sentences = re.split(
+                  r"(?<=[.!?])\s+",
+                  script.strip()
+              )
+
+              sentences = [
+                  s.strip()
+                  for s in sentences
+                  if s.strip()
+              ]
+
+              if not sentences:
+                  return
+
+              total_words = sum(
+                  len(x.split())
+                  for x in sentences
+              )
+
+              current = 0.0
+              rows = []
+
+              for i, sentence in enumerate(sentences):
+
+                  words = len(sentence.split())
+
+                  part = (
+                      duration * words /
+                      max(total_words, 1)
+                  )
+
+                  start = current
+                  end = min(
+                      duration,
+                      current + part
+                  )
+
+                  rows.append(
+                      f"{i + 1}\n"
+                      f"{srt_time(start)} --> "
+                      f"{srt_time(end)}\n"
+                      f"{sentence}\n"
+                  )
+
+                  current = end
+
+              Path(output).write_text(
+                  "\n".join(rows),
+                  encoding="utf-8"
+              )
+
+
+          # ============================================================
+          # VIDEO SCENE
+          # ============================================================
+
+          def create_scene_video(
+              image,
+              audio,
+              output,
+              duration,
+              index
+          ):
+
+              frames = max(
+                  1,
+                  int(duration * 30)
+              )
+
+              # Gentle animated zoom.
+              zoom = (
+                  "zoompan="
+                  "z='min(zoom+0.0008,1.12)':"
+                  "x='iw/2-(iw/zoom/2)':"
+                  "y='ih/2-(ih/zoom/2)':"
+                  f"d={frames}:"
+                  "s=1280x720:"
+                  "fps=30"
+              )
+
+              run_cmd([
+                  "ffmpeg",
+                  "-y",
+                  "-loop",
+                  "1",
+                  "-i",
+                  str(image),
+                  "-i",
+                  str(audio),
+                  "-vf",
+                  zoom,
+                  "-t",
+                  str(duration),
+                  "-c:v",
+                  "libx264",
+                  "-preset",
+                  "veryfast",
+                  "-pix_fmt",
+                  "yuv420p",
+                  "-c:a",
+                  "aac",
+                  "-b:a",
+                  "192k",
+                  "-shortest",
                   str(output)
               ])
 
-          # ==========================================================
-          # LONG SCENE VIDEO
-          # ==========================================================
 
-          long_files = []
-          long_durations = []
+          # ============================================================
+          # CONCAT
+          # ============================================================
 
-          for scene in package["long_scenes"]:
+          def concat_videos(files, output):
 
-              n = int(scene["scene_number"])
+              concat_file = ROOT / "concat.txt"
 
-              image = LONG_DIR / f"scene_{n:02d}.jpg"
-              audio = LONG_DIR / f"scene_{n:02d}.mp3"
-              video = LONG_DIR / f"scene_{n:02d}.mp4"
+              with open(
+                  concat_file,
+                  "w",
+                  encoding="utf-8"
+              ) as f:
 
-              tts(
-                  scene["narration"],
-                  audio
-              )
-
-              d = duration(audio)
-
-              run([
-                  "ffmpeg", "-y",
-                  "-loop", "1",
-                  "-i", str(image),
-                  "-i", str(audio),
-                  "-t", str(d),
-                  "-vf",
-                  (
-                      "scale=2200:-2,"
-                      "crop=1920:1080,"
-                      "zoompan="
-                      "z='min(zoom+0.0003,1.08)':"
-                      "x='iw/2-(iw/zoom/2)':"
-                      "y='ih/2-(ih/zoom/2)':"
-                      "d=1:s=1920x1080:fps=30,"
-                      "format=yuv420p"
-                  ),
-                  "-af",
-                  "loudnorm=I=-14:TP=-1.5:LRA=11",
-                  "-c:v", "libx264",
-                  "-preset", "veryfast",
-                  "-crf", "21",
-                  "-c:a", "aac",
-                  "-b:a", "192k",
-                  "-shortest",
-                  str(video)
-              ])
-
-              long_files.append(video)
-              long_durations.append(d)
-
-          # ==========================================================
-          # CONCAT LONG
-          # ==========================================================
-
-          concat = ROOT / "long.txt"
-
-          with open(concat, "w") as f:
-              for x in long_files:
-                  f.write(
-                      f"file '{x.resolve()}'\n"
-                  )
-
-          long_raw = ROOT / "long_raw.mp4"
-
-          run([
-              "ffmpeg", "-y",
-              "-f", "concat",
-              "-safe", "0",
-              "-i", str(concat),
-              "-c", "copy",
-              str(long_raw)
-          ])
-
-          # ==========================================================
-          # LONG CAPTIONS
-          # ==========================================================
-
-          def srt_time(sec):
-
-              ms = int(sec * 1000)
-
-              h = ms // 3600000
-              ms %= 3600000
-              m = ms // 60000
-              ms %= 60000
-              s = ms // 1000
-              ms %= 1000
-
-              return (
-                  f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-              )
-
-          srt = ROOT / "long.srt"
-
-          current = 0
-          idx = 1
-
-          with open(
-              srt,
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              for scene, d in zip(
-                  package["long_scenes"],
-                  long_durations
-              ):
-
-                  words = clean(
-                      scene["narration"]
-                  ).split()
-
-                  chunks = [
-                      words[i:i+9]
-                      for i in range(
-                          0,
-                          len(words),
-                          9
-                      )
-                  ]
-
-                  for i, chunk in enumerate(chunks):
-
-                      start = current + (
-                          d * i / len(chunks)
-                      )
-
-                      end = current + (
-                          d * (i+1) / len(chunks)
-                      )
+                  for file in files:
+                      absolute = Path(file).resolve()
 
                       f.write(
-                          f"{idx}\n"
-                          f"{srt_time(start)} --> "
-                          f"{srt_time(end)}\n"
-                          f"{' '.join(chunk)}\n\n"
+                          "file '"
+                          + str(absolute)
+                              .replace("'", "'\\''")
+                          + "'\n"
                       )
 
-                      idx += 1
-
-                  current += d
-
-          # ==========================================================
-          # FINAL LONG VIDEO
-          # ==========================================================
-
-          long_final = ROOT / "TechMind_Long.mp4"
-
-          run([
-              "ffmpeg", "-y",
-              "-i", str(long_raw),
-              "-vf",
-              (
-                  "subtitles="
-                  + str(srt)
-                  + ":force_style="
-                  "'FontName=DejaVu Sans,"
-                  "FontSize=20,"
-                  "Bold=1,"
-                  "Outline=2,"
-                  "Shadow=1,"
-                  "MarginV=55'"
-              ),
-              "-c:v", "libx264",
-              "-preset", "veryfast",
-              "-crf", "20",
-              "-c:a", "aac",
-              "-b:a", "192k",
-              str(long_final)
-          ])
-
-          # ==========================================================
-          # SHORT
-          # ==========================================================
-
-          short_files = []
-          short_durations = []
-
-          for scene in package["short_scenes"]:
-
-              n = int(scene["scene_number"])
-
-              image = SHORT_DIR / f"scene_{n:02d}.jpg"
-              audio = SHORT_DIR / f"scene_{n:02d}.mp3"
-              video = SHORT_DIR / f"scene_{n:02d}.mp4"
-
-              tts(
-                  scene["narration"],
-                  audio
-              )
-
-              d = duration(audio)
-
-              run([
-                  "ffmpeg", "-y",
-                  "-loop", "1",
-                  "-i", str(image),
-                  "-i", str(audio),
-                  "-t", str(d),
-                  "-vf",
-                  (
-                      "scale=1080:1920:"
-                      "force_original_aspect_ratio=increase,"
-                      "crop=1080:1920,"
-                      "zoompan="
-                      "z='min(zoom+0.0004,1.07)':"
-                      "x='iw/2-(iw/zoom/2)':"
-                      "y='ih/2-(ih/zoom/2)':"
-                      "d=1:s=1080x1920:fps=30,"
-                      "format=yuv420p"
-                  ),
-                  "-af",
-                  "loudnorm=I=-14:TP=-1.5:LRA=11",
-                  "-c:v", "libx264",
-                  "-preset", "veryfast",
-                  "-crf", "22",
-                  "-c:a", "aac",
-                  "-b:a", "160k",
-                  "-shortest",
-                  str(video)
+              run_cmd([
+                  "ffmpeg",
+                  "-y",
+                  "-f",
+                  "concat",
+                  "-safe",
+                  "0",
+                  "-i",
+                  str(concat_file),
+                  "-c",
+                  "copy",
+                  str(output)
               ])
 
-              short_files.append(video)
-              short_durations.append(d)
 
-          short_concat = ROOT / "short.txt"
+          # ============================================================
+          # GET MEDIA DURATION
+          # ============================================================
 
-          with open(short_concat, "w") as f:
-              for x in short_files:
-                  f.write(
-                      f"file '{x.resolve()}'\n"
+          def media_duration(path):
+
+              result = subprocess.run(
+                  [
+                      "ffprobe",
+                      "-v",
+                      "error",
+                      "-show_entries",
+                      "format=duration",
+                      "-of",
+                      "default=noprint_wrappers=1:"
+                      "nokey=1",
+                      str(path)
+                  ],
+                  capture_output=True,
+                  text=True
+              )
+
+              return float(
+                  result.stdout.strip()
+              )
+
+
+          # ============================================================
+          # FINAL LONG VIDEO
+          # ============================================================
+
+          def build_long_video(package):
+
+              print("Building long-form video...")
+
+              scenes = package["long_video"]["scenes"]
+
+              scene_files = []
+
+              total_scene_duration = (
+                  4.8 * 60 / max(len(scenes), 1)
+              )
+
+              for i, scene in enumerate(scenes):
+
+                  index = i + 1
+
+                  image_path = (
+                      LONG_DIR /
+                      f"scene_{index:02d}.jpg"
                   )
 
-          short_raw = ROOT / "short_raw.mp4"
+                  audio_path = (
+                      AUDIO_DIR /
+                      f"scene_{index:02d}.mp3"
+                  )
 
-          run([
-              "ffmpeg", "-y",
-              "-f", "concat",
-              "-safe", "0",
-              "-i", str(short_concat),
-              "-c", "copy",
-              str(short_raw)
-          ])
+                  video_path = (
+                      LONG_DIR /
+                      f"scene_{index:02d}.mp4"
+                  )
 
-          # ==========================================================
-          # SHORT FINAL
-          # ==========================================================
+                  prompt = scene["visual_prompt"]
 
-          short_final = ROOT / "TechMind_Short.mp4"
+                  # Force clean visual style.
+                  prompt += (
+                      "\n\nCreate a cinematic professional "
+                      "technology-news visual. "
+                      "No readable paragraphs. "
+                      "No watermark. "
+                      "No fake UI screenshots. "
+                      "No random people. "
+                      "High contrast. "
+                      "Realistic lighting. "
+                      "16:9 composition."
+                  )
 
-          run([
-              "ffmpeg", "-y",
-              "-i", str(short_raw),
-              "-c:v", "libx264",
-              "-preset", "veryfast",
-              "-crf", "21",
-              "-c:a", "aac",
-              "-b:a", "160k",
-              str(short_final)
-          ])
+                  try:
 
-          # ==========================================================
+                      generate_image(
+                          prompt,
+                          image_path,
+                          "16:9"
+                      )
+
+                  except Exception as e:
+
+                      print(
+                          "Image generation failed, "
+                          "using fallback visual:",
+                          e
+                      )
+
+                      create_fallback_image(
+                          scene["on_screen_text"],
+                          image_path
+                      )
+
+                  make_tts(
+                      scene["voiceover"],
+                      audio_path
+                  )
+
+                  actual_duration = media_duration(
+                      audio_path
+                  )
+
+                  create_scene_video(
+                      image_path,
+                      audio_path,
+                      video_path,
+                      actual_duration,
+                      index
+                  )
+
+                  scene_files.append(
+                      video_path
+                  )
+
+              raw_output = (
+                  ROOT /
+                  "long_raw.mp4"
+              )
+
+              concat_videos(
+                  scene_files,
+                  raw_output
+              )
+
+              final_output = (
+                  ROOT /
+                  "TechMind_AI_Latest.mp4"
+              )
+
+              run_cmd([
+                  "ffmpeg",
+                  "-y",
+                  "-i",
+                  str(raw_output),
+                  "-c:v",
+                  "libx264",
+                  "-preset",
+                  "medium",
+                  "-crf",
+                  "21",
+                  "-c:a",
+                  "aac",
+                  "-b:a",
+                  "192k",
+                  "-movflags",
+                  "+faststart",
+                  str(final_output)
+              ])
+
+              return final_output
+
+
+          # ============================================================
+          # SHORT
+          # ============================================================
+
+          def build_short(package):
+
+              print("Building Short...")
+
+              scenes = package["short"]["scenes"]
+
+              image_path = (
+                  SHORT_DIR /
+                  "short_visual.jpg"
+              )
+
+              first_prompt = scenes[0]["visual_prompt"]
+
+              try:
+
+                  generate_image(
+                      first_prompt +
+                      "\nVertical social media composition. "
+                      "Strong visual center. "
+                      "No watermark.",
+                      image_path,
+                      "9:16"
+                  )
+
+              except Exception:
+
+                  create_fallback_image(
+                      package["short"]["hook"],
+                      image_path,
+                      720,
+                      1280
+                  )
+
+              audio_path = (
+                  AUDIO_DIR /
+                  "short.mp3"
+              )
+
+              script = " ".join(
+                  x["voiceover"]
+                  for x in scenes
+              )
+
+              make_tts(
+                  script,
+                  audio_path
+              )
+
+              duration = media_duration(
+                  audio_path
+              )
+
+              short_output = (
+                  ROOT /
+                  "TechMind_AI_Short.mp4"
+              )
+
+              frames = max(
+                  1,
+                  int(duration * 30)
+              )
+
+              vf = (
+                  "scale=720:1280:"
+                  "force_original_aspect_ratio=decrease,"
+                  "pad=720:1280:(ow-iw)/2:(oh-ih)/2,"
+                  "zoompan="
+                  "z='min(zoom+0.001,1.10)':"
+                  "d=" + str(frames) +
+                  ":s=720x1280:fps=30"
+              )
+
+              run_cmd([
+                  "ffmpeg",
+                  "-y",
+                  "-loop",
+                  "1",
+                  "-i",
+                  str(image_path),
+                  "-i",
+                  str(audio_path),
+                  "-vf",
+                  vf,
+                  "-t",
+                  str(duration),
+                  "-c:v",
+                  "libx264",
+                  "-pix_fmt",
+                  "yuv420p",
+                  "-c:a",
+                  "aac",
+                  "-b:a",
+                  "192k",
+                  "-shortest",
+                  str(short_output)
+              ])
+
+              return short_output
+
+
+          # ============================================================
           # THUMBNAIL
-          # ==========================================================
+          # ============================================================
 
-          thumb_bg = ROOT / "thumbnail_bg.jpg"
+          def build_thumbnail(package):
 
-          generate_image(
-              f"""
-              Professional YouTube thumbnail for:
-              {package['title']}
+              title = package["title"]
 
-              16:9.
-              Extremely eye-catching.
-              Premium AI technology visual.
-              Strong subject on right.
-              Clean dark space on left.
-              Cinematic lighting.
-              High contrast.
-              Realistic.
-              No text.
-              No watermark.
-              No random logo.
-              """,
-              thumb_bg,
-              "16:9"
-          )
+              source = (
+                  LONG_DIR /
+                  "scene_01.jpg"
+              )
 
-          img = Image.open(
-              thumb_bg
-          ).convert("RGB").resize((1280,720))
+              output = (
+                  THUMB_DIR /
+                  "thumbnail.jpg"
+              )
 
-          draw = ImageDraw.Draw(img)
+              if source.exists():
 
-          font_path = (
-              "/usr/share/fonts/truetype/dejavu/"
-              "DejaVuSans-Bold.ttf"
-          )
+                  img = Image.open(source).convert("RGB")
+                  img = img.resize((1280, 720))
 
-          font = ImageFont.truetype(
-              font_path,
-              58
-          )
-
-          title = re.sub(
-              r"[^\x00-\x7F]+",
-              "",
-              package["title"]
-          )
-
-          words = title.split()
-
-          if len(words) > 7:
-              title = " ".join(words[:7])
-
-          lines = []
-          current_line = ""
-
-          for word in title.split():
-
-              test = (
-                  current_line + " " + word
-              ).strip()
-
-              if len(test) > 19:
-                  lines.append(current_line)
-                  current_line = word
               else:
-                  current_line = test
 
-          if current_line:
-              lines.append(current_line)
+                  img = Image.new(
+                      "RGB",
+                      (1280, 720),
+                      (10, 15, 25)
+                  )
 
-          y = 180
+              draw = ImageDraw.Draw(img)
 
-          for line in lines[:3]:
+              try:
 
-              draw.text(
-                  (55,y),
-                  line,
+                  font = ImageFont.truetype(
+                      "/usr/share/fonts/truetype/dejavu/"
+                      "DejaVuSans-Bold.ttf",
+                      62
+                  )
+
+              except Exception:
+
+                  font = None
+
+              # Short title for thumbnail.
+              thumb_text = title
+
+              if len(thumb_text) > 48:
+                  thumb_text = (
+                      thumb_text[:45] + "..."
+                  )
+
+              # Dark overlay.
+              overlay = Image.new(
+                  "RGBA",
+                  img.size,
+                  (0, 0, 0, 100)
+              )
+
+              img = Image.alpha_composite(
+                  img.convert("RGBA"),
+                  overlay
+              ).convert("RGB")
+
+              draw = ImageDraw.Draw(img)
+
+              box = draw.multiline_textbbox(
+                  (0, 0),
+                  thumb_text,
+                  font=font,
+                  spacing=10
+              )
+
+              w = box[2] - box[0]
+              h = box[3] - box[1]
+
+              x = (1280 - w) / 2
+              y = (720 - h) / 2
+
+              draw.multiline_text(
+                  (x, y),
+                  thumb_text,
                   font=font,
                   fill="white",
-                  stroke_width=5,
-                  stroke_fill="black"
+                  stroke_width=3,
+                  stroke_fill="black",
+                  align="center"
               )
 
-              y += 75
-
-          draw.text(
-              (58,635),
-              "TECHMIND",
-              font=ImageFont.truetype(
-                  font_path,
-                  27
-              ),
-              fill="white",
-              stroke_width=2,
-              stroke_fill="black"
-          )
-
-          thumbnail = ROOT / "thumbnail.jpg"
-
-          img.save(
-              thumbnail,
-              quality=95
-          )
-
-          # ==========================================================
-          # QUALITY CHECK
-          # ==========================================================
-
-          long_duration = duration(
-              long_final
-          )
-
-          short_duration = duration(
-              short_final
-          )
-
-          print(
-              "LONG:",
-              long_duration,
-              "seconds"
-          )
-
-          print(
-              "SHORT:",
-              short_duration,
-              "seconds"
-          )
-
-          if not 210 <= long_duration <= 360:
-              raise RuntimeError(
-                  "Long video is outside 3.5-6 minute safety range."
+              draw.text(
+                  (45, 650),
+                  "TECHMIND AI",
+                  font=font,
+                  fill="white"
               )
 
-          if short_duration < 25:
-              raise RuntimeError(
-                  "Short is too short."
+              img.save(
+                  output,
+                  quality=95
               )
 
-          # ==========================================================
-          # METADATA
-          # ==========================================================
+              return output
 
-          description = (
-              clean(package["description"])
-              + "\n\n"
-              + " ".join(
-                  package.get(
-                      "hashtags",
-                      []
-                  )
-              )
-          )
 
-          metadata = {
-              "title": package["title"],
-              "description": description,
-              "tags": package["tags"],
-              "topic": package["topic"]
-          }
-
-          (ROOT / "metadata.json").write_text(
-              json.dumps(
-                  metadata,
-                  ensure_ascii=False,
-                  indent=2
-              ),
-              encoding="utf-8"
-          )
-
-          # ==========================================================
+          # ============================================================
           # YOUTUBE
-          # ==========================================================
+          # ============================================================
 
-          scopes = [
-              "https://www.googleapis.com/auth/youtube.upload"
-          ]
+          def youtube_client():
 
-          credentials = (
-              Credentials.from_authorized_user_info(
-                  json.loads(TOKEN_JSON),
-                  scopes
+              token = os.environ[
+                  "YOUTUBE_TOKEN_JSON"
+              ]
+
+              info = json.loads(token)
+
+              credentials = Credentials.from_authorized_user_info(
+                  info,
+                  scopes=[
+                      "https://www.googleapis.com/"
+                      "auth/youtube.upload"
+                  ]
               )
-          )
 
-          if (
-              credentials.expired
-              and credentials.refresh_token
+              return build(
+                  "youtube",
+                  "v3",
+                  credentials=credentials
+              )
+
+
+          def upload_video(
+              youtube,
+              video_path,
+              title,
+              description,
+              tags,
+              thumbnail=None
           ):
-              credentials.refresh(
-                  Request()
+
+              print(
+                  "Uploading:",
+                  video_path
               )
 
-          if not credentials.valid:
-              raise RuntimeError(
-                  "YouTube token is invalid."
-              )
-
-          youtube = build(
-              "youtube",
-              "v3",
-              credentials=credentials
-          )
-
-          # ==========================================================
-          # LONG UPLOAD
-          # ==========================================================
-
-          body = {
-              "snippet": {
-                  "title": metadata["title"],
-                  "description": metadata["description"],
-                  "tags": metadata["tags"],
-                  "categoryId": "28"
-              },
-              "status": {
-                  "privacyStatus": "public",
-                  "selfDeclaredMadeForKids": False
+              body = {
+                  "snippet": {
+                      "title": title[:100],
+                      "description": description,
+                      "tags": tags[:30],
+                      "categoryId": "28",
+                      "defaultLanguage": "en"
+                  },
+                  "status": {
+                      "privacyStatus": "public",
+                      "selfDeclaredMadeForKids": False
+                  }
               }
-          }
 
-          print("UPLOADING LONG VIDEO...")
-
-          req = youtube.videos().insert(
-              part="snippet,status",
-              body=body,
-              media_body=MediaFileUpload(
-                  str(long_final),
-                  mimetype="video/mp4",
+              media = MediaFileUpload(
+                  str(video_path),
+                  chunksize=8 * 1024 * 1024,
                   resumable=True
               )
-          )
 
-          response = None
-
-          while response is None:
-
-              status, response = (
-                  req.next_chunk()
+              request = youtube.videos().insert(
+                  part="snippet,status",
+                  body=body,
+                  media_body=media
               )
 
-              if status:
-                  print(
-                      "LONG UPLOAD:",
-                      int(
-                          status.progress() * 100
-                      ),
-                      "%"
-                  )
+              response = None
 
-          long_id = response["id"]
+              while response is None:
 
-          print(
-              "LONG VIDEO:",
-              long_id
-          )
+                  status, response = request.next_chunk()
 
-          youtube.thumbnails().set(
-              videoId=long_id,
-              media_body=MediaFileUpload(
-                  str(thumbnail),
-                  mimetype="image/jpeg"
-              )
-          ).execute()
-
-          print("LONG THUMBNAIL SET")
-
-          # ==========================================================
-          # SHORT UPLOAD
-          # ==========================================================
-
-          short_title = metadata["title"]
-
-          if len(short_title) > 75:
-              short_title = short_title[:72] + "..."
-
-          if "#Shorts" not in short_title:
-              short_title += " #Shorts"
-
-          short_body = {
-              "snippet": {
-                  "title": short_title,
-                  "description": (
-                      "Quick AI update from TechMind.\n\n"
-                      + " ".join(
-                          package.get(
-                              "hashtags",
-                              []
-                          )
+                  if status:
+                      print(
+                          f"Upload progress: "
+                          f"{int(status.progress() * 100)}%"
                       )
-                  ),
-                  "tags": metadata["tags"],
-                  "categoryId": "28"
-              },
-              "status": {
-                  "privacyStatus": "public",
-                  "selfDeclaredMadeForKids": False
-              }
-          }
 
-          print("UPLOADING SHORT...")
+              video_id = response["id"]
 
-          req = youtube.videos().insert(
-              part="snippet,status",
-              body=short_body,
-              media_body=MediaFileUpload(
-                  str(short_final),
-                  mimetype="video/mp4",
-                  resumable=True
-              )
-          )
-
-          response = None
-
-          while response is None:
-
-              status, response = (
-                  req.next_chunk()
+              print(
+                  "YOUTUBE UPLOAD SUCCESS:",
+                  video_id
               )
 
-              if status:
-                  print(
-                      "SHORT UPLOAD:",
-                      int(
-                          status.progress() * 100
-                      ),
-                      "%"
+              if thumbnail and Path(
+                  thumbnail
+              ).exists():
+
+                  try:
+
+                      youtube.thumbnails().set(
+                          videoId=video_id,
+                          media_body=MediaFileUpload(
+                              str(thumbnail),
+                              mimetype="image/jpeg"
+                          )
+                      ).execute()
+
+                      print(
+                          "Thumbnail uploaded."
+                      )
+
+                  except Exception as e:
+
+                      print(
+                          "Thumbnail upload warning:",
+                          e
+                      )
+
+              return video_id
+
+
+          # ============================================================
+          # MAIN AI CONTENT GENERATION
+          # ============================================================
+
+          def generate_package():
+
+              topics = get_fresh_topics()
+
+              topic_text = "\n".join(
+                  f"- {x['title']}: "
+                  f"{x['summary']}"
+                  for x in topics
+              )
+
+              prompt = f"""
+          You are the senior producer for a professional AI/technology
+          YouTube channel called TechMind AI.
+
+          Today's fresh AI news/topics:
+
+          {topic_text}
+
+          Choose ONE topic that has:
+          - strong viewer interest
+          - current relevance
+          - useful educational value
+          - potential for YouTube search/discovery
+          - enough substance for a 4-5 minute original video
+
+          Do NOT simply copy the news article.
+          Create an original explanatory video.
+
+          Return ONLY valid JSON.
+
+          Required JSON:
+
+          {{
+            "topic": "...",
+            "title": "... relevant emoji ...",
+            "description": "...",
+            "hashtags": ["#AI", "#..."],
+            "tags": ["AI", "..."],
+            "hook": "...",
+            "long_video": {{
+              "script": "...",
+              "scenes": [
+                {{
+                  "visual_prompt": "...",
+                  "voiceover": "...",
+                  "on_screen_text": "..."
+                }}
+              ]
+            }},
+            "short": {{
+              "title": "... emoji ...",
+              "hook": "...",
+              "scenes": [
+                {{
+                  "visual_prompt": "...",
+                  "voiceover": "..."
+                }}
+              ]
+            }}
+          }}
+
+          Rules:
+
+          LONG VIDEO:
+          - 4 to 5 minutes.
+          - 10 scenes.
+          - Every scene must have a DIFFERENT visual concept.
+          - Strong first 10 seconds.
+          - Natural spoken English.
+          - Explain the topic clearly.
+          - No boring filler.
+          - No copied article language.
+          - Add useful examples.
+          - End with a strong takeaway and subscribe CTA.
+
+          TITLE:
+          - compelling but not fake clickbait
+          - maximum 90 characters
+          - include 1 or 2 relevant emojis
+
+          DESCRIPTION:
+          - 2-4 useful paragraphs
+          - include relevant keywords naturally
+          - include the generated hashtags at the end
+
+          HASHTAGS:
+          - 5 to 8 relevant hashtags.
+
+          TAGS:
+          - 10 to 20 relevant YouTube tags.
+
+          VISUAL PROMPTS:
+          - cinematic technology journalism
+          - realistic
+          - professional
+          - different composition every scene
+          - no watermark
+          - no giant paragraphs
+          - no copyrighted logos unless genuinely relevant
+          - no fake quotations
+
+          SHORT:
+          - 35-55 seconds
+          - 5 scenes
+          - extremely strong hook
+          - vertical-video friendly
+          """
+
+              raw = gemini_text(prompt)
+
+              package = json.loads(
+                  clean_json(raw)
+              )
+
+              # Basic validation.
+              required = [
+                  "topic",
+                  "title",
+                  "description",
+                  "hashtags",
+                  "tags",
+                  "long_video",
+                  "short"
+              ]
+
+              for key in required:
+
+                  if key not in package:
+                      raise RuntimeError(
+                          f"Missing JSON field: {key}"
+                      )
+
+              if len(
+                  package["long_video"]["scenes"]
+              ) < 8:
+
+                  raise RuntimeError(
+                      "Too few long-video scenes."
                   )
 
-          short_id = response["id"]
+              if len(
+                  package["short"]["scenes"]
+              ) < 4:
 
-          print(
-              "SHORT:",
-              short_id
-          )
+                  raise RuntimeError(
+                      "Too few Short scenes."
+                  )
 
-          # ==========================================================
-          # FINAL
-          # ==========================================================
+              # Ensure hashtags exist in description.
+              hashtag_text = " ".join(
+                  package["hashtags"]
+              )
 
-          print("")
-          print("================================")
-          print("PRODUCTION COMPLETE")
-          print("================================")
-          print(
-              "LONG:",
-              "https://youtube.com/watch?v="
-              + long_id
-          )
-          print(
-              "SHORT:",
-              "https://youtube.com/shorts/"
-              + short_id
-          )
-          print("================================")
+              if hashtag_text not in package[
+                  "description"
+              ]:
+
+                  package["description"] += (
+                      "\n\n" + hashtag_text
+                  )
+
+              return package
+
+
+          # ============================================================
+          # QUALITY CHECKS
+          # ============================================================
+
+          def quality_check(package, long_video, short_video):
+
+              print("\n========== QUALITY CHECK ==========")
+
+              errors = []
+
+              if not long_video.exists():
+                  errors.append(
+                      "Long video missing"
+                  )
+
+              if not short_video.exists():
+                  errors.append(
+                      "Short missing"
+                  )
+
+              if len(package["title"]) > 100:
+                  errors.append(
+                      "Title too long"
+                  )
+
+              if len(
+                  package["description"]
+              ) < 100:
+
+                  errors.append(
+                      "Description too short"
+                  )
+
+              long_duration = media_duration(
+                  long_video
+              )
+
+              short_duration = media_duration(
+                  short_video
+              )
+
+              print(
+                  f"Long duration: "
+                  f"{long_duration:.1f}s"
+              )
+
+              print(
+                  f"Short duration: "
+                  f"{short_duration:.1f}s"
+              )
+
+              if long_duration < 180:
+                  errors.append(
+                      "Long video shorter than 3 minutes"
+                  )
+
+              if short_duration < 20:
+                  errors.append(
+                      "Short is too short"
+                  )
+
+              if errors:
+
+                  print(
+                      "QUALITY WARNINGS:",
+                      errors
+                  )
+
+              else:
+
+                  print(
+                      "QUALITY CHECK PASSED"
+                  )
+
+              # Don't fail because an optional
+              # quality metric is imperfect.
+              return len(errors) == 0
+
+
+          # ============================================================
+          # SAVE METADATA
+          # ============================================================
+
+          def save_metadata(package):
+
+              metadata = {
+                  **package,
+                  "generated_at": datetime.now(
+                      timezone.utc
+                  ).isoformat()
+              }
+
+              path = ROOT / "metadata.json"
+
+              path.write_text(
+                  json.dumps(
+                      metadata,
+                      indent=2,
+                      ensure_ascii=False
+                  ),
+                  encoding="utf-8"
+              )
+
+              return path
+
+
+          # ============================================================
+          # MAIN
+          # ============================================================
+
+          def main():
+
+              print(
+                  "\n===================================="
+              )
+
+              print(
+                  "TECHMIND AI PRODUCTION START"
+              )
+
+              print(
+                  "====================================\n"
+              )
+
+              package = generate_package()
+
+              print(
+                  "TOPIC:",
+                  package["topic"]
+              )
+
+              print(
+                  "TITLE:",
+                  package["title"]
+              )
+
+              print(
+                  "HASHTAGS:",
+                  package["hashtags"]
+              )
+
+              print(
+                  "TAGS:",
+                  package["tags"]
+              )
+
+              metadata = save_metadata(
+                  package
+              )
+
+              long_video = build_long_video(
+                  package
+              )
+
+              short_video = build_short(
+                  package
+              )
+
+              thumbnail = build_thumbnail(
+                  package
+              )
+
+              quality_check(
+                  package,
+                  long_video,
+                  short_video
+              )
+
+              youtube = youtube_client()
+
+              long_description = (
+                  package["description"]
+                  + "\n\n"
+                  + "Watch the full video for "
+                    "the complete explanation."
+              )
+
+              long_tags = package["tags"]
+
+              long_id = upload_video(
+                  youtube,
+                  long_video,
+                  package["title"],
+                  long_description,
+                  long_tags,
+                  thumbnail
+              )
+
+              short_id = upload_video(
+                  youtube,
+                  short_video,
+                  package["short"]["title"],
+                  package["description"],
+                  package["tags"],
+                  None
+              )
+
+              print("\n====================================")
+              print("PRODUCTION COMPLETE")
+              print("====================================")
+              print("LONG VIDEO:", long_id)
+              print("SHORT:", short_id)
+              print("METADATA:", metadata)
+              print("====================================")
+
+
+          if __name__ == "__main__":
+              main()
 
           PY
 
+      - name: Run AI production
+        run: |
           python creator.py
 
-      - name: Save production artifacts
+      - name: Upload production artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: techmind-production
+          name: techmind-ai-production
           path: production/
+          if-no-files-found: warn
           retention-days: 7
