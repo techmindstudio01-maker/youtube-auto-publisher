@@ -1,6 +1,7 @@
 # ============================================================
 # TECHMIND STUDIO - AUTOMATIC AI YOUTUBE PUBLISHER
-# MAX 3 MINUTES + RELEVANT VISUALS + ANIMATION
+# MAX 3 MIN LONG VIDEO
+# SCENE-SPECIFIC VISUALS + ANIMATION + SHORT + THUMBNAIL
 # ============================================================
 
 import os
@@ -26,8 +27,8 @@ SHORT = BASE / "short"
 AUDIO = BASE / "audio"
 THUMB = BASE / "thumbnail"
 
-for d in [LONG, SHORT, AUDIO, THUMB]:
-    d.mkdir(parents=True, exist_ok=True)
+for folder in [LONG, SHORT, AUDIO, THUMB]:
+    folder.mkdir(parents=True, exist_ok=True)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 YOUTUBE_TOKEN_JSON = os.getenv("YOUTUBE_TOKEN_JSON", "").strip()
@@ -35,7 +36,6 @@ YOUTUBE_TOKEN_JSON = os.getenv("YOUTUBE_TOKEN_JSON", "").strip()
 VOICE = "en-US-ChristopherNeural"
 
 MAX_LONG_SECONDS = 180
-TARGET_LONG_SECONDS = 170
 
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY is missing")
@@ -45,38 +45,36 @@ if not YOUTUBE_TOKEN_JSON:
 
 
 # ============================================================
-# BASIC HELPERS
+# COMMAND HELPER
 # ============================================================
 
 def run(cmd):
     print("\nRUN:", " ".join(map(str, cmd)))
 
-    p = subprocess.run(
+    process = subprocess.run(
         [str(x) for x in cmd],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
     )
 
-    print(p.stdout)
+    print(process.stdout)
 
-    if p.returncode != 0:
+    if process.returncode != 0:
         raise RuntimeError(
-            f"Command failed with exit code {p.returncode}"
+            "Command failed with exit code "
+            + str(process.returncode)
         )
 
-    return p
+    return process
 
 
-def clean_text(s):
-    s = str(s or "")
-    s = re.sub(r"```(?:json)?", "", s, flags=re.I)
-    s = s.replace("```", "")
-    return s.strip()
-
+# ============================================================
+# DURATION
+# ============================================================
 
 def get_duration(path):
-    p = subprocess.run(
+    process = subprocess.run(
         [
             "ffprobe",
             "-v",
@@ -92,7 +90,23 @@ def get_duration(path):
         check=True
     )
 
-    return float(p.stdout.strip())
+    return float(process.stdout.strip())
+
+
+# ============================================================
+# CLEAN TEXT
+# ============================================================
+
+def clean_text(text):
+    text = str(text or "")
+    text = re.sub(
+        r"```(?:json)?",
+        "",
+        text,
+        flags=re.I
+    )
+    text = text.replace("```", "")
+    return text.strip()
 
 
 # ============================================================
@@ -115,7 +129,9 @@ def gemini(prompt, retries=5):
 
             url = (
                 "https://generativelanguage.googleapis.com/"
-                f"v1beta/models/{model}:generateContent"
+                "v1beta/models/"
+                + model
+                + ":generateContent"
             )
 
             payload = {
@@ -147,15 +163,17 @@ def gemini(prompt, retries=5):
                 )
 
                 print(
-                    f"Gemini {model}: "
-                    f"HTTP {response.status_code}"
+                    "Gemini",
+                    model,
+                    "HTTP",
+                    response.status_code
                 )
 
                 if response.status_code == 200:
 
-                    data = response.json()
+                    result = response.json()
 
-                    candidates = data.get(
+                    candidates = result.get(
                         "candidates",
                         []
                     )
@@ -163,19 +181,17 @@ def gemini(prompt, retries=5):
                     if not candidates:
                         continue
 
-                    parts = candidates[0].get(
-                        "content",
-                        {}
-                    ).get(
-                        "parts",
-                        []
+                    parts = (
+                        candidates[0]
+                        .get("content", {})
+                        .get("parts", [])
                     )
 
-                    text = "".join(
-                        part.get("text", "")
-                        for part in parts
-                        if "text" in part
-                    )
+                    text = ""
+
+                    for part in parts:
+                        if "text" in part:
+                            text += part["text"]
 
                     text = clean_text(text)
 
@@ -183,6 +199,7 @@ def gemini(prompt, retries=5):
                         return text
 
                 elif response.status_code == 404:
+
                     continue
 
                 elif response.status_code in [
@@ -192,34 +209,40 @@ def gemini(prompt, retries=5):
                     503,
                     504
                 ]:
+
                     last_error = response.text
 
                 else:
+
                     raise RuntimeError(
                         "Gemini HTTP "
-                        f"{response.status_code}: "
-                        f"{response.text[:500]}"
+                        + str(response.status_code)
+                        + ": "
+                        + response.text[:500]
                     )
 
-            except requests.RequestException as e:
-                last_error = str(e)
+            except requests.RequestException as error:
+
+                last_error = str(error)
 
         wait = min(20, attempt * 4)
 
         print(
-            f"Gemini retry in {wait} seconds..."
+            "Gemini retry in",
+            wait,
+            "seconds..."
         )
 
         time.sleep(wait)
 
     raise RuntimeError(
         "Gemini failed after retries: "
-        + str(last_error)
+        + last_error
     )
 
 
 # ============================================================
-# CONTENT CREATION
+# CONTENT GENERATION
 # ============================================================
 
 def create_content():
@@ -227,54 +250,60 @@ def create_content():
     prompt = f"""
 You are the senior producer for {CHANNEL}.
 
-Create ONE fresh and interesting AI/technology YouTube topic.
+Create ONE fresh AI or technology YouTube topic.
 
-IMPORTANT VIDEO LENGTH:
-The LONG video must be MAXIMUM 3 MINUTES.
-Target approximately 2 minutes 40 seconds to 2 minutes 55 seconds.
+IMPORTANT:
+The LONG VIDEO MUST be MAXIMUM 3 MINUTES.
 
-Use approximately 380-440 spoken words total.
+Target:
+2 minutes 35 seconds to 2 minutes 55 seconds.
+
+Use approximately 330-390 spoken English words total.
 
 Create EXACTLY 8 long-video scenes.
 
-Each scene must have:
-1. narration
-2. visual_query
+Each scene MUST contain:
+- narration
+- visual_query
 
-The narration must be concise so the total finished video stays below 3 minutes.
+The visual_query must describe the EXACT visual needed
+for that scene.
 
-VISUAL REQUIREMENT:
-Every scene must have a highly specific visual_query describing
-exactly what should be visible for that scene.
+Do NOT use generic visual queries.
 
-DO NOT use generic queries such as:
+BAD:
 "artificial intelligence"
 "technology"
 "robot"
 
-Instead use specific searches such as:
-"OpenAI AI assistant computer interface"
-"AI coding assistant developer laptop"
-"autonomous AI agent workflow diagram"
-"AI customer service chatbot office"
+GOOD:
+"AI coding assistant helping developer write code on laptop"
+"AI customer service chatbot conversation interface"
+"AI video generator creating cinematic video on computer"
+"AI agent automating office workflow"
 
-The visual_query must match the narration of THAT scene.
+Every scene must have a DIFFERENT visual.
 
 LONG VIDEO:
-- strong hook in first 5-8 seconds
+- powerful first 5 seconds
 - natural conversational English
 - useful information
 - practical examples
-- no fake claims
-- no repetitive filler
+- no fake facts
+- no filler
 - fast pacing
 - strong ending
-- exactly 8 scenes
-- approximately 45-55 words per scene
+- 8 scenes
+- approximately 40-50 spoken words per scene
 
-Also create a 40-55 second YouTube Short.
-Use exactly 4 scenes.
-Each Short scene must also have a highly specific visual_query.
+Also create a YouTube Short.
+
+SHORT:
+- 40-55 seconds
+- exactly 4 scenes
+- fast hook
+- useful information
+- each scene gets its own specific visual_query
 
 TITLE:
 - under 90 characters
@@ -283,15 +312,15 @@ TITLE:
 
 DESCRIPTION:
 - professional
-- summarize the video
+- useful
 - include hashtags
 
 TAGS:
-- 12 to 15 relevant YouTube tags
+- 12 to 15 YouTube tags
 
 Return ONLY valid JSON.
 
-JSON format:
+FORMAT:
 
 {{
   "topic": "...",
@@ -299,23 +328,24 @@ JSON format:
   "description": "...",
   "hashtags": [
     "#AI",
-    "#ArtificialIntelligence",
-    "#Technology"
+    "#Technology",
+    "#ArtificialIntelligence"
   ],
   "tags": [
     "AI",
-    "artificial intelligence"
+    "artificial intelligence",
+    "technology"
   ],
   "long_scenes": [
     {{
       "narration": "...",
-      "visual_query": "very specific visual search query"
+      "visual_query": "specific visual search query"
     }}
   ],
   "short_scenes": [
     {{
       "narration": "...",
-      "visual_query": "very specific visual search query"
+      "visual_query": "specific visual search query"
     }}
   ]
 }}
@@ -326,7 +356,7 @@ JSON format:
     start = raw.find("{")
     end = raw.rfind("}")
 
-    if start < 0 or end < 0:
+    if start == -1 or end == -1:
         raise RuntimeError(
             "Gemini returned invalid JSON"
         )
@@ -335,29 +365,34 @@ JSON format:
         raw[start:end + 1]
     )
 
-    if len(data.get("long_scenes", [])) < 8:
+    long_scenes = data.get(
+        "long_scenes",
+        []
+    )
+
+    short_scenes = data.get(
+        "short_scenes",
+        []
+    )
+
+    if len(long_scenes) < 8:
         raise RuntimeError(
-            "Gemini did not create 8 long scenes"
+            "Gemini created fewer than 8 long scenes"
         )
 
-    if len(data.get("short_scenes", [])) < 4:
+    if len(short_scenes) < 4:
         raise RuntimeError(
-            "Gemini did not create 4 Short scenes"
+            "Gemini created fewer than 4 short scenes"
         )
 
-    data["long_scenes"] = data[
-        "long_scenes"
-    ][:8]
-
-    data["short_scenes"] = data[
-        "short_scenes"
-    ][:4]
+    data["long_scenes"] = long_scenes[:8]
+    data["short_scenes"] = short_scenes[:4]
 
     return data
 
 
 # ============================================================
-# VOICE
+# EDGE TTS
 # ============================================================
 
 def make_voice(text, output):
@@ -369,7 +404,7 @@ def make_voice(text, output):
             VOICE,
             "--rate=-5%",
             "--text",
-            text,
+            str(text),
             "--write-media",
             str(output)
         ]
@@ -382,10 +417,10 @@ def make_voice(text, output):
 
 
 # ============================================================
-# FRESH RELEVANT IMAGE SEARCH
+# IMAGE SEARCH
 # ============================================================
 
-def search_wikimedia(query):
+def search_images(query):
 
     response = requests.get(
         "https://commons.wikimedia.org/w/api.php",
@@ -414,7 +449,7 @@ def search_wikimedia(query):
         .get("pages", {})
     )
 
-    results = []
+    urls = []
 
     for page in pages.values():
 
@@ -426,36 +461,29 @@ def search_wikimedia(query):
         if not info:
             continue
 
-        item = info[0]
-
         url = (
-            item.get("thumburl")
-            or item.get("url")
+            info[0].get("thumburl")
+            or info[0].get("url")
         )
 
         if url:
-            results.append(url)
+            urls.append(url)
 
-    return results
+    return urls
 
 
 def download_image(query, output):
 
-    print(
-        "\n================================================"
-    )
-    print("SCENE VISUAL SEARCH:")
+    print("\n----------------------------------------")
+    print("VISUAL SEARCH:")
     print(query)
-    print(
-        "================================================"
-    )
+    print("----------------------------------------")
 
-    urls = search_wikimedia(query)
+    urls = search_images(query)
 
     if not urls:
         raise RuntimeError(
-            "No relevant image found for: "
-            + query
+            "No image found for: " + query
         )
 
     random.shuffle(urls)
@@ -467,150 +495,103 @@ def download_image(query, output):
             response = requests.get(
                 url,
                 headers={
-                    "User-Agent":
-                    "TechMindStudio/2.0"
+                    "User-Agent": "TechMindStudio/2.0"
                 },
                 timeout=60
             )
 
             response.raise_for_status()
 
-            content = response.content
-
-            if len(content) < 30000:
+            if len(response.content) < 30000:
                 continue
 
-            output.write_bytes(content)
+            output.write_bytes(
+                response.content
+            )
 
             print(
-                "RELEVANT IMAGE DOWNLOADED:",
+                "IMAGE OK:",
                 output
             )
 
             return
 
-        except Exception as e:
+        except Exception as error:
 
             print(
                 "Image failed:",
-                e
+                error
             )
 
     raise RuntimeError(
-        "No usable image found for query: "
+        "No usable image found for: "
         + query
     )
 
 
 # ============================================================
-# ATTRACTIVE SCENE VIDEO
+# ANIMATED SCENE
 # ============================================================
 
 def make_scene(
     image,
     audio,
     output,
-    motion,
-    scene_number
+    motion
 ):
 
-    scene_duration = get_duration(audio)
+    scene_duration = get_duration(
+        audio
+    )
 
-    # Different animation for every scene.
+    # Simple FFmpeg expressions.
+    # These are intentionally kept simple
+    # to avoid syntax errors.
+
     if motion == "left":
 
-        zoom = "1.08+0.00035*on"
-
-        x = (
-            "(iw-iw/zoom)*"
-            "(0.15+0.70*on/(30*"
-            f"{scene_duration}"))"
-        )
-
-        y = (
-            "ih/2-(ih/zoom/2)"
-        )
+        zoom = "1.04+0.00020*on"
+        x = "0"
+        y = "ih/2-(ih/zoom/2)"
 
     elif motion == "right":
 
-        zoom = "1.08+0.00035*on"
-
-        x = (
-            "(iw-iw/zoom)*"
-            "(0.85-0.70*on/(30*"
-            f"{scene_duration}"))"
-        )
-
-        y = (
-            "ih/2-(ih/zoom/2)"
-        )
+        zoom = "1.04+0.00020*on"
+        x = "(iw-iw/zoom)"
+        y = "ih/2-(ih/zoom/2)"
 
     elif motion == "up":
 
-        zoom = "1.07+0.00030*on"
-
-        x = (
-            "iw/2-(iw/zoom/2)"
-        )
-
-        y = (
-            "(ih-ih/zoom)*"
-            "(0.80-0.60*on/(30*"
-            f"{scene_duration}"))"
-        )
+        zoom = "1.04+0.00020*on"
+        x = "iw/2-(iw/zoom/2)"
+        y = "0"
 
     elif motion == "down":
 
-        zoom = "1.07+0.00030*on"
-
-        x = (
-            "iw/2-(iw/zoom/2)"
-        )
-
-        y = (
-            "(ih-ih/zoom)*"
-            "(0.20+0.60*on/(30*"
-            f"{scene_duration}"))"
-        )
+        zoom = "1.04+0.00020*on"
+        x = "iw/2-(iw/zoom/2)"
+        y = "(ih-ih/zoom)"
 
     elif motion == "zoom_out":
 
-        zoom = (
-            "1.20-"
-            "0.00030*on"
-        )
-
-        x = (
-            "iw/2-(iw/zoom/2)"
-        )
-
-        y = (
-            "ih/2-(ih/zoom/2)"
-        )
+        zoom = "1.18-0.00025*on"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
 
     else:
 
-        zoom = (
-            "1.02+"
-            "0.00045*on"
-        )
-
-        x = (
-            "iw/2-(iw/zoom/2)"
-        )
-
-        y = (
-            "ih/2-(ih/zoom/2)"
-        )
+        zoom = "1.02+0.00025*on"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
 
     vf = (
         "scale=2200:1240:"
         "force_original_aspect_ratio=increase,"
         "crop=2200:1240,"
         "zoompan="
-        f"z='{zoom}':"
-        f"x='{x}':"
-        f"y='{y}':"
+        "z='" + zoom + "':"
+        "x='" + x + "':"
+        "y='" + y + "':"
         "d=1:"
         "s=1920x1080:"
         "fps=30,"
@@ -679,8 +660,11 @@ def create_long(data):
         number = index + 1
 
         print(
-            f"\n========== LONG SCENE "
-            f"{number}/{len(scenes)} =========="
+            "\n========== LONG SCENE "
+            + str(number)
+            + "/"
+            + str(len(scenes))
+            + " =========="
         )
 
         narration = str(
@@ -692,18 +676,18 @@ def create_long(data):
         ).strip()
 
         audio = (
-            AUDIO /
-            f"long_{number:02d}.mp3"
+            AUDIO
+            / ("long_%02d.mp3" % number)
         )
 
         image = (
-            LONG /
-            f"scene_{number:02d}.jpg"
+            LONG
+            / ("scene_%02d.jpg" % number)
         )
 
         video = (
-            LONG /
-            f"scene_{number:02d}.mp4"
+            LONG
+            / ("scene_%02d.mp4" % number)
         )
 
         make_voice(
@@ -711,9 +695,8 @@ def create_long(data):
             audio
         )
 
-        # IMPORTANT:
-        # Every scene gets its own fresh
-        # topic-specific image search.
+        # Every scene gets its own
+        # specific image search.
         download_image(
             visual_query,
             image
@@ -723,8 +706,9 @@ def create_long(data):
             image,
             audio,
             video,
-            motions[index % len(motions)],
-            number
+            motions[
+                index % len(motions)
+            ]
         )
 
         videos.append(video)
@@ -743,7 +727,9 @@ def create_long(data):
         for video in videos:
 
             file.write(
-                f"file '{video.resolve()}'\n"
+                "file '"
+                + str(video.resolve())
+                + "'\n"
             )
 
     raw = LONG / "raw_long.mp4"
@@ -767,7 +753,7 @@ def create_long(data):
     )
 
     # --------------------------------------------------------
-    # FINAL 3-MINUTE LIMIT
+    # HARD 3-MINUTE LIMIT
     # --------------------------------------------------------
 
     final = LONG / "final_long.mp4"
@@ -779,7 +765,7 @@ def create_long(data):
             "-i",
             str(raw),
             "-t",
-            str(MAX_LONG_SECONDS),
+            "180",
             "-vf",
             (
                 "drawtext="
@@ -813,17 +799,19 @@ def create_long(data):
         ]
     )
 
-    final_duration = get_duration(final)
+    final_duration = get_duration(
+        final
+    )
 
     print(
-        "\nFINAL LONG VIDEO LENGTH:",
+        "\nFINAL LONG VIDEO:",
         round(final_duration, 2),
         "seconds"
     )
 
-    if final_duration > MAX_LONG_SECONDS + 1:
+    if final_duration > 181:
         raise RuntimeError(
-            "Long video exceeded 3 minute limit"
+            "Video is longer than 3 minutes"
         )
 
     return final
@@ -839,30 +827,23 @@ def create_short(data):
 
     videos = []
 
-    motions = [
-        "zoom",
-        "left",
-        "right",
-        "down"
-    ]
-
     for index, scene in enumerate(scenes):
 
         number = index + 1
 
         audio = (
-            AUDIO /
-            f"short_{number:02d}.mp3"
+            AUDIO
+            / ("short_%02d.mp3" % number)
         )
 
         image = (
-            SHORT /
-            f"scene_{number:02d}.jpg"
+            SHORT
+            / ("scene_%02d.jpg" % number)
         )
 
         video = (
-            SHORT /
-            f"scene_{number:02d}.mp4"
+            SHORT
+            / ("scene_%02d.mp4" % number)
         )
 
         make_voice(
@@ -875,40 +856,42 @@ def create_short(data):
             image
         )
 
-        d = get_duration(audio)
+        d = get_duration(
+            audio
+        )
 
-        if motions[index] == "left":
+        if index == 0:
 
-            zoom = "1.08+0.0004*on"
-            x = "(iw-iw/zoom)*0.7"
-            y = "ih/2-(ih/zoom/2)"
-
-        elif motions[index] == "right":
-
-            zoom = "1.08+0.0004*on"
-            x = "(iw-iw/zoom)*0.3"
-            y = "ih/2-(ih/zoom/2)"
-
-        elif motions[index] == "down":
-
-            zoom = "1.07+0.00035*on"
+            zoom = "1.03+0.00030*on"
             x = "iw/2-(iw/zoom/2)"
-            y = "(ih-ih/zoom)*0.7"
+            y = "ih/2-(ih/zoom/2)"
+
+        elif index == 1:
+
+            zoom = "1.05+0.00025*on"
+            x = "0"
+            y = "ih/2-(ih/zoom/2)"
+
+        elif index == 2:
+
+            zoom = "1.05+0.00025*on"
+            x = "(iw-iw/zoom)"
+            y = "ih/2-(ih/zoom/2)"
 
         else:
 
-            zoom = "1.03+0.00045*on"
+            zoom = "1.04+0.00030*on"
             x = "iw/2-(iw/zoom/2)"
-            y = "ih/2-(ih/zoom/2)"
+            y = "0"
 
         vf = (
             "scale=1080:1920:"
             "force_original_aspect_ratio=increase,"
             "crop=1080:1920,"
             "zoompan="
-            f"z='{zoom}':"
-            f"x='{x}':"
-            f"y='{y}':"
+            "z='" + zoom + "':"
+            "x='" + x + "':"
+            "y='" + y + "':"
             "d=1:"
             "s=1080x1920:"
             "fps=30,"
@@ -962,7 +945,9 @@ def create_short(data):
         for video in videos:
 
             file.write(
-                f"file '{video.resolve()}'\n"
+                "file '"
+                + str(video.resolve())
+                + "'\n"
             )
 
     raw = SHORT / "raw_short.mp4"
@@ -1038,9 +1023,8 @@ def create_thumbnail(data):
     source = THUMB / "source.jpg"
 
     query = (
-        data["topic"]
-        + " artificial intelligence "
-        + "technology professional"
+        str(data["topic"])
+        + " AI technology professional"
     )
 
     download_image(
@@ -1057,31 +1041,29 @@ def create_thumbnail(data):
         )
     )
 
-    # Remove characters that can cause
-    # FFmpeg drawtext problems.
     title = re.sub(
         r"[^A-Za-z0-9 .,!?&-]",
         "",
         title
     )
 
-    title = title.replace(
-        ":",
-        ""
-    )
-
     title = title[:55]
 
-    drawtext = (
+    filter_text = (
+        "scale=1280:720:"
+        "force_original_aspect_ratio=increase,"
+        "crop=1280:720,"
         "drawtext="
         "fontfile=/usr/share/fonts/"
         "truetype/dejavu/"
         "DejaVuSans-Bold.ttf:"
         "fontcolor=white:"
-        "fontsize=62:"
-        f"text='{title}':"
-        "x=60:"
-        "y=70:"
+        "fontsize=58:"
+        "text='"
+        + title
+        + "':"
+        "x=50:"
+        "y=60:"
         "borderw=4:"
         "bordercolor=black"
     )
@@ -1093,12 +1075,7 @@ def create_thumbnail(data):
             "-i",
             str(source),
             "-vf",
-            (
-                "scale=1280:720:"
-                "force_original_aspect_ratio=increase,"
-                "crop=1280:720,"
-                + drawtext
-            ),
+            filter_text,
             "-q:v",
             "2",
             str(thumbnail)
@@ -1114,31 +1091,42 @@ def create_thumbnail(data):
 
 def save_metadata(data):
 
-    metadata = {
-        "channel": CHANNEL,
-        "title": data.get("title", ""),
-        "description": data.get(
+    description = str(
+        data.get(
             "description",
             ""
-        ),
-        "hashtags": data.get(
-            "hashtags",
-            []
-        ),
-        "tags": data.get(
-            "tags",
-            []
         )
-    }
+    )
 
-    hashtags = metadata["hashtags"]
+    hashtags = data.get(
+        "hashtags",
+        []
+    )
+
+    tags = data.get(
+        "tags",
+        []
+    )
 
     if hashtags:
 
-        metadata["description"] += (
+        description += (
             "\n\n"
-            + " ".join(hashtags)
+            + " ".join(
+                str(x)
+                for x in hashtags
+            )
         )
+
+    metadata = {
+        "channel": CHANNEL,
+        "title": str(
+            data.get("title", "")
+        ),
+        "description": description,
+        "hashtags": hashtags,
+        "tags": tags
+    }
 
     path = BASE / "metadata.json"
 
@@ -1155,28 +1143,28 @@ def save_metadata(data):
 
 
 # ============================================================
-# YOUTUBE UPLOAD
+# YOUTUBE
 # ============================================================
 
 def youtube_service():
 
-    from google.oauth2.credentials import (
-        Credentials
-    )
+    from google.oauth2.credentials import Credentials
 
-    from googleapiclient.discovery import (
-        build
-    )
+    from googleapiclient.discovery import build
 
     token = json.loads(
         YOUTUBE_TOKEN_JSON
     )
 
-    credentials = Credentials.from_authorized_user_info(
-        token,
-        scopes=[
-            "https://www.googleapis.com/auth/youtube.upload"
-        ]
+    credentials = (
+        Credentials
+        .from_authorized_user_info(
+            token,
+            scopes=[
+                "https://www.googleapis.com/auth/"
+                "youtube.upload"
+            ]
+        )
     )
 
     return build(
@@ -1191,8 +1179,7 @@ def upload_video(
     video_path,
     title,
     description,
-    tags,
-    category="28"
+    tags
 ):
 
     from googleapiclient.http import (
@@ -1204,7 +1191,7 @@ def upload_video(
             "title": title,
             "description": description,
             "tags": tags,
-            "categoryId": category
+            "categoryId": "28"
         },
         "status": {
             "privacyStatus": "public",
@@ -1224,12 +1211,12 @@ def upload_video(
         media_body=media
     )
 
-    response = request.execute()
+    result = request.execute()
 
-    video_id = response["id"]
+    video_id = result["id"]
 
     print(
-        "\nYOUTUBE UPLOADED:",
+        "\nYOUTUBE UPLOAD SUCCESS:",
         video_id
     )
 
@@ -1257,7 +1244,7 @@ def upload_thumbnail(
     ).execute()
 
     print(
-        "THUMBNAIL UPLOADED"
+        "THUMBNAIL UPLOAD SUCCESS"
     )
 
 
@@ -1267,26 +1254,19 @@ def upload_thumbnail(
 
 def main():
 
-    print(
-        "\n=========================================="
-    )
+    print("\n")
+    print("==============================================")
+    print("TECHMIND STUDIO AUTOMATION")
+    print("==============================================")
+    print("MAX LONG VIDEO: 180 SECONDS")
+    print("SCENE-SPECIFIC VISUALS: ENABLED")
+    print("ANIMATED VISUALS: ENABLED")
+    print("SHORTS: ENABLED")
+    print("THUMBNAIL: ENABLED")
+    print("==============================================")
+    print("\n")
 
-    print(
-        "TECHMIND STUDIO AUTOMATION STARTED"
-    )
-
-    print(
-        "MAX LONG VIDEO: 3 MINUTES"
-    )
-
-    print(
-        "SCENE-SPECIFIC FRESH VISUALS: ON"
-    )
-
-    print(
-        "==========================================\n"
-    )
-
+    # 1. Generate fresh topic/content.
     data = create_content()
 
     print(
@@ -1299,16 +1279,30 @@ def main():
         data.get("title")
     )
 
-    metadata = save_metadata(data)
+    # 2. Save metadata.
+    metadata = save_metadata(
+        data
+    )
 
-    long_video = create_long(data)
+    # 3. Create max 3-minute long video.
+    long_video = create_long(
+        data
+    )
 
-    short_video = create_short(data)
+    # 4. Create Short.
+    short_video = create_short(
+        data
+    )
 
-    thumbnail = create_thumbnail(data)
+    # 5. Create thumbnail.
+    thumbnail = create_thumbnail(
+        data
+    )
 
+    # 6. Connect YouTube.
     service = youtube_service()
 
+    # 7. Upload long video.
     long_id = upload_video(
         service,
         long_video,
@@ -1317,12 +1311,14 @@ def main():
         metadata["tags"]
     )
 
+    # 8. Upload thumbnail.
     upload_thumbnail(
         service,
         long_id,
         thumbnail
     )
 
+    # 9. Upload Short.
     short_title = (
         metadata["title"]
         + " #Shorts"
@@ -1341,32 +1337,14 @@ def main():
         metadata["tags"]
     )
 
-    print(
-        "\n=========================================="
-    )
-
-    print(
-        "ALL DONE - TECHMIND STUDIO"
-    )
-
-    print(
-        "Long video:",
-        long_video
-    )
-
-    print(
-        "Short:",
-        short_video
-    )
-
-    print(
-        "Thumbnail:",
-        thumbnail
-    )
-
-    print(
-        "=========================================="
-    )
+    print("\n")
+    print("==============================================")
+    print("TECHMIND STUDIO - ALL DONE")
+    print("==============================================")
+    print("LONG:", long_video)
+    print("SHORT:", short_video)
+    print("THUMBNAIL:", thumbnail)
+    print("==============================================")
 
 
 if __name__ == "__main__":
