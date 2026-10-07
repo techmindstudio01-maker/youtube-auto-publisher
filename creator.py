@@ -544,4 +544,4 @@ def create_short(data):
 
 def create_thumbnail(data):
     image = THUMB / "source.jpg"
-    download_image(data["topic"] + " artificial intelligence technology", image
+    download_image(data["topic"] + " artificial intelligence technology", image)
