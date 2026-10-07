@@ -1,4 +1,4 @@
-name: TechMind Studio - Daily AI Creator
+name: TechMind Studio - Real Motion AI Creator
 
 on:
   workflow_dispatch:
@@ -20,38 +20,20 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # 1. SYSTEM
-      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            fonts-dejavu \
-            fonts-liberation \
-            imagemagick
+          sudo apt-get install -y ffmpeg fonts-dejavu fonts-liberation
 
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install \
-            google-genai \
-            google-api-python-client \
-            google-auth \
-            edge-tts \
-            requests \
-            pillow \
-            feedparser
+          pip install google-genai google-api-python-client google-auth edge-tts requests pillow
 
-      # ============================================================
-      # 2. CREATE ENGINE
-      # ============================================================
       - name: Create production engine
-        shell: bash
         run: |
           cat > creator.py <<'PY'
           import os
@@ -59,658 +41,703 @@ jobs:
           import json
           import math
           import random
-          import shutil
+          import asyncio
           import subprocess
           from pathlib import Path
 
           import requests
-          from PIL import Image, ImageDraw, ImageFont
+          from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
           from google import genai
           import edge_tts
 
-          # ==========================================================
+          # ============================================================
           # CONFIG
-          # ==========================================================
+          # ============================================================
 
           BRAND = "TECHMIND STUDIO"
 
           ROOT = Path("production")
-          LONG_DIR = ROOT / "long"
-          SHORT_DIR = ROOT / "short"
-          AUDIO_DIR = ROOT / "audio"
+          LONG = ROOT / "long"
+          SHORT = ROOT / "short"
+          AUDIO = ROOT / "audio"
 
-          LONG_DIR.mkdir(parents=True, exist_ok=True)
-          SHORT_DIR.mkdir(parents=True, exist_ok=True)
-          AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+          for d in [LONG, SHORT, AUDIO]:
+              d.mkdir(parents=True, exist_ok=True)
 
-          LONG_W = 1920
-          LONG_H = 1080
-
-          SHORT_W = 1080
-          SHORT_H = 1920
-
+          LW, LH = 1920, 1080
+          SW, SH = 1080, 1920
           FPS = 30
 
           USED_IMAGES = set()
           IMAGE_SOURCES = []
 
-          # ==========================================================
-          # HELPERS
-          # ==========================================================
+          client = genai.Client(
+              api_key=os.environ["GEMINI_API_KEY"]
+          )
+
+          MODEL = "gemini-3.5-flash-lite"
+
+          # ============================================================
+          # COMMAND
+          # ============================================================
 
           def run(cmd):
-              print("RUN:", " ".join(map(str, cmd)))
+              print("\nRUN:", " ".join(map(str, cmd)))
+
               p = subprocess.run(
                   cmd,
                   stdout=subprocess.PIPE,
                   stderr=subprocess.STDOUT,
                   text=True
               )
+
               print(p.stdout)
+
               if p.returncode != 0:
-                  raise RuntimeError("Command failed")
-              return p.stdout
+                  raise RuntimeError(
+                      "Command failed"
+                  )
 
-          def clean_json(text):
-              text = text.strip()
-
-              if "```" in text:
-                  text = re.sub(r"```(?:json)?", "", text)
-                  text = text.replace("```", "")
-
-              start = text.find("{")
-              end = text.rfind("}")
-
-              if start >= 0 and end >= 0:
-                  text = text[start:end + 1]
-
-              return json.loads(text)
-
-          def safe_name(s):
-              s = re.sub(r"[^a-zA-Z0-9_-]+", "_", s)
-              return s[:80]
-
-          def font(size, bold=False):
-              paths = [
-                  "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-                  if bold else
-                  "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-
-                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-                  if bold else
-                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-              ]
-
-              for p in paths:
-                  if os.path.exists(p):
-                      return ImageFont.truetype(p, size)
-
-              return ImageFont.load_default()
-
-          # ==========================================================
+          # ============================================================
           # GEMINI
-          # ==========================================================
+          # ============================================================
 
-          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+          def ask(prompt):
 
-          MODEL = "gemini-3.5-flash-lite"
-
-          def ask_gemini(prompt):
-
-              last_error = None
+              last = None
 
               for attempt in range(6):
-                  try:
-                      print(f"GEMINI ATTEMPT {attempt + 1}/6")
 
-                      response = client.models.generate_content(
+                  try:
+                      print(
+                          f"GEMINI {attempt + 1}/6"
+                      )
+
+                      r = client.models.generate_content(
                           model=MODEL,
                           contents=prompt
                       )
 
-                      text = response.text.strip()
-
-                      if text:
-                          print("GEMINI OK")
-                          return text
+                      if r.text:
+                          return r.text.strip()
 
                   except Exception as e:
-                      last_error = e
-                      print("Gemini error:", e)
+                      last = e
+                      print(e)
 
-              raise RuntimeError(f"Gemini failed: {last_error}")
+              raise RuntimeError(
+                  f"Gemini failed: {last}"
+              )
 
-          # ==========================================================
-          # CONTENT PACKAGE
-          # ==========================================================
+          def json_clean(x):
 
-          def create_package():
+              x = x.strip()
+
+              x = re.sub(
+                  r"```json",
+                  "",
+                  x,
+                  flags=re.I
+              )
+
+              x = x.replace("```", "")
+
+              a = x.find("{")
+              b = x.rfind("}")
+
+              return json.loads(
+                  x[a:b + 1]
+              )
+
+          # ============================================================
+          # CONTENT
+          # ============================================================
+
+          def create_content():
 
               prompt = """
-              You are the senior producer for a professional AI technology
-              YouTube channel called TechMind Studio.
+              Create a professional YouTube video package for
+              TECHMIND STUDIO.
 
-              Create ONE fresh, interesting AI/technology topic that can
-              realistically attract YouTube viewers.
+              Topic must be fresh, interesting and AI/technology focused.
 
-              Avoid fake news and avoid unsupported claims.
+              The long video must be 4.5 to 5 minutes.
 
-              Create a complete 4.5 to 5 minute narration.
+              Write 700-850 words.
 
-              IMPORTANT:
-              The final video visuals will contain ONLY the small
-              TECHMIND STUDIO brand at bottom-left.
+              The first 10 seconds must have a very strong hook.
 
-              Do NOT depend on text appearing on screen.
+              The narration must sound natural when spoken by an AI voice.
 
-              Return ONLY valid JSON:
+              IMPORTANT VISUAL DIRECTION:
+
+              The video will use realistic full-screen photographic
+              visuals with cinematic motion.
+
+              Visuals should be suitable for:
+              - AI data centers
+              - robots
+              - AI chips
+              - computers
+              - people using technology
+              - futuristic laboratories
+              - servers
+              - smartphones
+              - software development
+              - real technology products
+
+              Give 10 DIFFERENT visual concepts.
+
+              Each visual concept must be specific enough to find a
+              realistic HD photograph.
+
+              Also give a motion_type for every scene.
+
+              Allowed motion types:
+
+              push_in
+              pull_out
+              track_left
+              track_right
+              rise
+              descend
+              parallax
+              orbit
+              focus
+
+              Return ONLY JSON:
 
               {
-                "topic": "...",
-                "title": "... with 1 or 2 relevant emojis",
-                "description": "...",
-                "hashtags": ["#AI", "#Technology", "..."],
-                "tags": ["AI", "artificial intelligence", "..."],
-                "script": "...",
-                "visual_search": [
-                  "...",
-                  "...",
-                  "...",
-                  "...",
-                  "...",
-                  "...",
-                  "...",
-                  "...",
-                  "...",
-                  "..."
-                ],
-                "short_script": "..."
+                "topic": "",
+                "title": "",
+                "description": "",
+                "hashtags": [],
+                "tags": [],
+                "script": "",
+                "short_script": "",
+                "scenes": [
+                  {
+                    "visual": "",
+                    "motion_type": "push_in"
+                  }
+                ]
               }
 
-              Requirements:
+              Exactly 10 scenes.
 
-              - 650-800 words for the long script.
-              - Strong first 10-second hook.
-              - Natural spoken language.
-              - No filler.
-              - Explain the topic clearly.
-              - Interesting progression.
-              - Strong ending.
-              - Short script should be around 45-60 seconds.
-              - Visual search queries must describe REAL photographic subjects,
-                products, people, locations, devices, data centers, AI labs,
-                computers, robots, chips, etc. related to the topic.
-              - Make every visual query meaningfully different.
+              Short script should be approximately 50 seconds.
               """
 
-              raw = ask_gemini(prompt)
-              data = clean_json(raw)
+              return json_clean(
+                  ask(prompt)
+              )
 
-              required = [
-                  "topic",
-                  "title",
-                  "description",
-                  "hashtags",
-                  "tags",
-                  "script",
-                  "visual_search",
-                  "short_script"
-              ]
+          # ============================================================
+          # IMAGE SEARCH
+          # ============================================================
 
-              for k in required:
-                  if k not in data:
-                      raise RuntimeError(f"Missing package field: {k}")
+          def find_image(query, output):
 
-              return data
+              print(
+                  "\nSEARCH REAL VISUAL:",
+                  query
+              )
 
-          # ==========================================================
-          # WIKIMEDIA REAL HD IMAGE SEARCH
-          # ==========================================================
-
-          def search_real_image(query, output):
-
-              print("IMAGE SEARCH:", query)
-
-              url = "https://commons.wikimedia.org/w/api.php"
+              api = (
+                  "https://commons.wikimedia.org/"
+                  "w/api.php"
+              )
 
               params = {
                   "action": "query",
                   "generator": "search",
                   "gsrsearch": query,
                   "gsrnamespace": 6,
-                  "gsrlimit": 15,
+                  "gsrlimit": 20,
                   "prop": "imageinfo",
                   "iiprop": "url|size",
-                  "iiurlwidth": 2400,
+                  "iiurlwidth": 2600,
                   "format": "json"
               }
 
               try:
+
                   r = requests.get(
-                      url,
+                      api,
                       params=params,
                       timeout=30,
                       headers={
                           "User-Agent":
-                          "TechMindStudio/1.0 YouTubeCreator"
+                          "TechMindStudio/1.0"
                       }
                   )
 
-                  r.raise_for_status()
-
                   data = r.json()
 
-                  pages = data.get("query", {}).get("pages", {})
+                  pages = data.get(
+                      "query",
+                      {}
+                  ).get(
+                      "pages",
+                      {}
+                  )
 
                   candidates = []
 
                   for page in pages.values():
 
-                      info = page.get("imageinfo", [])
+                      infos = page.get(
+                          "imageinfo",
+                          []
+                      )
 
-                      if not info:
+                      if not infos:
                           continue
 
-                      item = info[0]
+                      info = infos[0]
 
-                      image_url = item.get("thumburl") or item.get("url")
+                      url = (
+                          info.get("thumburl")
+                          or info.get("url")
+                      )
 
-                      width = item.get("width", 0)
-                      height = item.get("height", 0)
+                      w = info.get(
+                          "width",
+                          0
+                      )
 
-                      if not image_url:
+                      h = info.get(
+                          "height",
+                          0
+                      )
+
+                      if not url:
                           continue
 
-                      if image_url in USED_IMAGES:
+                      if url in USED_IMAGES:
                           continue
 
-                      if width < 1200 or height < 700:
-                          continue
-
-                      if not (
-                          image_url.lower().endswith(".jpg")
-                          or image_url.lower().endswith(".jpeg")
-                          or image_url.lower().endswith(".png")
-                          or ".jpg?" in image_url.lower()
-                          or ".jpeg?" in image_url.lower()
-                          or ".png?" in image_url.lower()
-                      ):
+                      if w < 1400 or h < 800:
                           continue
 
                       candidates.append(
-                          (image_url, width, height, page)
+                          (
+                              url,
+                              w,
+                              h,
+                              page.get(
+                                  "title",
+                                  ""
+                              )
+                          )
                       )
 
                   if not candidates:
-                      print("No suitable image:", query)
                       return False
 
-                  # Prefer large landscape images
+                  # Highest quality first
                   candidates.sort(
-                      key=lambda x: (
-                          x[1] * x[2],
-                          x[1] / max(x[2], 1)
-                      ),
+                      key=lambda x:
+                      x[1] * x[2],
                       reverse=True
                   )
 
-                  image_url, width, height, page = candidates[0]
+                  url, w, h, title = (
+                      candidates[0]
+                  )
 
                   img = requests.get(
-                      image_url,
+                      url,
                       timeout=60,
                       headers={
                           "User-Agent":
-                          "TechMindStudio/1.0 YouTubeCreator"
+                          "TechMindStudio/1.0"
                       }
                   )
 
                   img.raise_for_status()
 
-                  output.write_bytes(img.content)
+                  output.write_bytes(
+                      img.content
+                  )
 
-                  USED_IMAGES.add(image_url)
+                  USED_IMAGES.add(url)
 
                   IMAGE_SOURCES.append({
-                      "query": query,
-                      "title": page.get("title", ""),
-                      "url": image_url,
-                      "width": width,
-                      "height": height
+                      "title": title,
+                      "url": url
                   })
 
                   print(
-                      "IMAGE OK:",
-                      width,
+                      "REAL HD IMAGE:",
+                      w,
                       "x",
-                      height
+                      h
                   )
 
                   return True
 
               except Exception as e:
-                  print("Image search error:", e)
+                  print(
+                      "IMAGE ERROR:",
+                      e
+                  )
+
                   return False
 
-          # ==========================================================
-          # FALLBACK IMAGE
-          # ==========================================================
+          # ============================================================
+          # FALLBACK
+          # ============================================================
 
-          def fallback_image(output, vertical=False):
+          def fallback(path):
 
-              w = SHORT_W if vertical else LONG_W
-              h = SHORT_H if vertical else LONG_H
-
-              img = Image.new("RGB", (w, h), (8, 12, 20))
-              px = img.load()
-
-              # premium abstract tech gradient
-              for y in range(h):
-                  for x in range(w):
-                      glow = int(
-                          18 *
-                          math.exp(
-                              -(
-                                  (
-                                      (x - w * 0.55) ** 2 +
-                                      (y - h * 0.40) ** 2
-                                  )
-                                  /
-                                  (2 * (w * 0.35) ** 2)
-                              )
-                          )
-                      )
-
-                      px[x, y] = (
-                          5 + glow // 3,
-                          9 + glow // 2,
-                          18 + glow
-                      )
+              img = Image.new(
+                  "RGB",
+                  (1920, 1080),
+                  (7, 12, 22)
+              )
 
               draw = ImageDraw.Draw(img)
 
-              # subtle futuristic lines
-              for i in range(12):
-                  x = int(w * (i / 12))
-                  draw.line(
-                      [(x, 0), (int(x * 0.8), h)],
-                      fill=(35, 45, 65),
-                      width=max(1, w // 1200)
+              # soft futuristic background
+              for i in range(15):
+
+                  x = random.randint(
+                      0,
+                      1920
                   )
 
-              img.save(
-                  output,
-                  quality=96,
-                  optimize=True
+                  y = random.randint(
+                      0,
+                      1080
+                  )
+
+                  r = random.randint(
+                      100,
+                      500
+                  )
+
+                  draw.ellipse(
+                      (
+                          x-r,
+                          y-r,
+                          x+r,
+                          y+r
+                      ),
+                      fill=(
+                          random.randint(
+                              8,
+                              25
+                          ),
+                          random.randint(
+                              15,
+                              40
+                          ),
+                          random.randint(
+                              35,
+                              80
+                          )
+                      )
+                  )
+
+              img = img.filter(
+                  ImageFilter.GaussianBlur(50)
               )
 
-          # ==========================================================
-          # COVER CROP
-          # ==========================================================
+              img.save(
+                  path,
+                  quality=96
+              )
 
-          def cover_crop(image_path, width, height):
+          # ============================================================
+          # COVER IMAGE
+          # ============================================================
 
-              img = Image.open(image_path).convert("RGB")
+          def cover(path, width, height):
 
-              target_ratio = width / height
-              source_ratio = img.width / img.height
+              img = Image.open(
+                  path
+              ).convert("RGB")
 
-              if source_ratio > target_ratio:
+              ratio = width / height
+              sr = img.width / img.height
 
-                  # crop width
-                  new_width = int(img.height * target_ratio)
-                  left = (img.width - new_width) // 2
+              if sr > ratio:
+
+                  nw = int(
+                      img.height * ratio
+                  )
+
+                  left = (
+                      img.width - nw
+                  ) // 2
 
                   img = img.crop(
                       (
                           left,
                           0,
-                          left + new_width,
+                          left + nw,
                           img.height
                       )
                   )
 
               else:
 
-                  # crop height
-                  new_height = int(img.width / target_ratio)
-                  top = (img.height - new_height) // 2
+                  nh = int(
+                      img.width / ratio
+                  )
+
+                  top = (
+                      img.height - nh
+                  ) // 2
 
                   img = img.crop(
                       (
                           0,
                           top,
                           img.width,
-                          top + new_height
+                          top + nh
                       )
                   )
 
               return img.resize(
-                  (width, height),
+                  (
+                      width,
+                      height
+                  ),
                   Image.Resampling.LANCZOS
               )
 
-          # ==========================================================
-          # PREMIUM FULL SCREEN VISUAL
-          # ONLY BRAND AT BOTTOM LEFT
-          # ==========================================================
+          # ============================================================
+          # BRAND ONLY
+          # ============================================================
 
-          def create_visual(
-              query,
-              output,
-              vertical=False,
-              scene_index=0
-          ):
+          def add_brand(img):
 
-              width = SHORT_W if vertical else LONG_W
-              height = SHORT_H if vertical else LONG_H
-
-              raw_path = output.with_suffix(".raw.jpg")
-
-              ok = search_real_image(
-                  query,
-                  raw_path
+              draw = ImageDraw.Draw(
+                  img,
+                  "RGBA"
               )
 
-              if ok:
-                  try:
-                      img = cover_crop(
-                          raw_path,
-                          width,
-                          height
-                      )
-                  except Exception:
-                      fallback_image(
-                          raw_path,
-                          vertical
-                      )
-                      img = cover_crop(
-                          raw_path,
-                          width,
-                          height
-                      )
-              else:
-                  fallback_image(
-                      raw_path,
-                      vertical
-                  )
-
-                  img = cover_crop(
-                      raw_path,
-                      width,
-                      height
-                  )
-
-              # ------------------------------------------------------
-              # SUBTLE CINEMATIC COLOR TREATMENT
-              # NO TEXT / NO PANELS
-              # ------------------------------------------------------
-
-              # Slight contrast enhancement
-              from PIL import ImageEnhance
-
-              img = ImageEnhance.Contrast(img).enhance(1.06)
-              img = ImageEnhance.Color(img).enhance(1.04)
-              img = ImageEnhance.Sharpness(img).enhance(1.08)
-
-              draw = ImageDraw.Draw(img)
-
-              # ------------------------------------------------------
-              # ONLY BRAND - BOTTOM LEFT
-              # ------------------------------------------------------
-
-              brand_size = 34 if not vertical else 32
-
-              brand_font = font(
-                  brand_size,
-                  bold=True
+              font_path = (
+                  "/usr/share/fonts/"
+                  "truetype/liberation2/"
+                  "LiberationSans-Bold.ttf"
               )
 
-              margin_x = 42 if not vertical else 34
-              margin_y = 34 if not vertical else 55
+              f = ImageFont.truetype(
+                  font_path,
+                  30
+              )
+
+              text = BRAND
 
               bbox = draw.textbbox(
                   (0, 0),
-                  BRAND,
-                  font=brand_font
+                  text,
+                  font=f
               )
 
-              text_w = bbox[2] - bbox[0]
-              text_h = bbox[3] - bbox[1]
+              tw = bbox[2] - bbox[0]
+              th = bbox[3] - bbox[1]
 
-              x = margin_x
-              y = height - margin_y - text_h
+              x = 40
+              y = img.height - 58
 
-              # Small translucent black backing
-              pad_x = 16
-              pad_y = 9
-
+              # elegant glass tag
               draw.rounded_rectangle(
                   (
-                      x - pad_x,
-                      y - pad_y,
-                      x + text_w + pad_x,
-                      y + text_h + pad_y
+                      x - 12,
+                      y - 8,
+                      x + tw + 18,
+                      y + th + 10
                   ),
-                  radius=12,
-                  fill=(0, 0, 0, 145)
-              )
-
-              # subtle bright accent line
-              draw.rounded_rectangle(
-                  (
-                      x - pad_x,
-                      y - pad_y,
-                      x - pad_x + 5,
-                      y + text_h + pad_y
-                  ),
-                  radius=3,
-                  fill=(255, 255, 255, 230)
+                  radius=10,
+                  fill=(0, 0, 0, 115)
               )
 
               draw.text(
                   (x, y),
-                  BRAND,
-                  font=brand_font,
-                  fill=(255, 255, 255, 245)
+                  text,
+                  font=f,
+                  fill=(
+                      255,
+                      255,
+                      255,
+                      235
+                  )
               )
+
+              return img
+
+          # ============================================================
+          # PREPARE VISUAL
+          # ============================================================
+
+          def prepare_visual(
+              query,
+              output,
+              vertical=False
+          ):
+
+              w = SW if vertical else LW
+              h = SH if vertical else LH
+
+              raw = output.with_suffix(
+                  ".download.jpg"
+              )
+
+              if not find_image(
+                  query,
+                  raw
+              ):
+
+                  fallback(raw)
+
+              img = cover(
+                  raw,
+                  w,
+                  h
+              )
+
+              # Premium realistic grade
+              img = ImageEnhance.Contrast(
+                  img
+              ).enhance(1.05)
+
+              img = ImageEnhance.Color(
+                  img
+              ).enhance(1.04)
+
+              img = ImageEnhance.Sharpness(
+                  img
+              ).enhance(1.12)
+
+              img = add_brand(img)
 
               img.save(
                   output,
                   "JPEG",
-                  quality=97,
+                  quality=98,
                   subsampling=0
               )
 
-              try:
-                  raw_path.unlink()
-              except Exception:
-                  pass
+              raw.unlink(
+                  missing_ok=True
+              )
 
-          # ==========================================================
+          # ============================================================
           # TTS
-          # ==========================================================
+          # ============================================================
 
-          async def make_tts(text, output):
+          async def tts_async(
+              text,
+              output
+          ):
 
-              voice = "en-US-ChristopherNeural"
+              voice = (
+                  "en-US-ChristopherNeural"
+              )
 
-              communicate = edge_tts.Communicate(
+              t = edge_tts.Communicate(
                   text,
                   voice,
                   rate="-5%",
                   volume="+0%"
               )
 
-              await communicate.save(str(output))
-
-          def tts(text, output):
-
-              import asyncio
-
-              asyncio.run(
-                  make_tts(text, output)
+              await t.save(
+                  str(output)
               )
 
-          # ==========================================================
-          # SCRIPT SPLITTER
-          # ==========================================================
+          def make_tts(text, output):
 
-          def split_script(script, count):
+              asyncio.run(
+                  tts_async(
+                      text,
+                      output
+                  )
+              )
+
+          # ============================================================
+          # SCRIPT SPLIT
+          # ============================================================
+
+          def split_script(
+              text,
+              count
+          ):
 
               sentences = re.split(
-                  r'(?<=[.!?])\s+',
-                  script.strip()
+                  r"(?<=[.!?])\s+",
+                  text.strip()
               )
 
               sentences = [
-                  s.strip()
-                  for s in sentences
-                  if len(s.strip()) > 20
+                  x.strip()
+                  for x in sentences
+                  if len(x.strip()) > 15
               ]
 
               if not sentences:
-                  return [script]
+                  return [text]
 
               groups = []
 
-              per = max(
-                  1,
-                  math.ceil(len(sentences) / count)
-              )
+              total = len(sentences)
 
-              for i in range(0, len(sentences), per):
-                  groups.append(
-                      " ".join(
-                          sentences[i:i + per]
-                      )
+              for i in range(count):
+
+                  a = round(
+                      i * total / count
                   )
 
+                  b = round(
+                      (i + 1) *
+                      total /
+                      count
+                  )
+
+                  part = " ".join(
+                      sentences[a:b]
+                  )
+
+                  if part:
+                      groups.append(
+                          part
+                      )
+
               while len(groups) < count:
-                  groups.append(groups[-1])
+                  groups.append(
+                      groups[-1]
+                  )
 
-              return groups[:count]
+              return groups
 
-          # ==========================================================
-          # SMOOTH CINEMATIC IMAGE ANIMATION
-          # ==========================================================
+          # ============================================================
+          # REALISTIC MOTION ENGINE
+          # ============================================================
 
-          def make_scene_video(
+          def animated_scene(
               image,
               audio,
               output,
-              vertical=False,
-              index=0
+              motion,
+              vertical=False
           ):
 
-              width = SHORT_W if vertical else LONG_W
-              height = SHORT_H if vertical else LONG_H
+              w = SW if vertical else LW
+              h = SH if vertical else LH
 
-              # Get audio duration
-              probe = subprocess.run(
+              # --------------------------------------------------------
+              # Audio duration
+              # --------------------------------------------------------
+
+              p = subprocess.run(
                   [
                       "ffprobe",
-                      "-v", "error",
+                      "-v",
+                      "error",
                       "-show_entries",
                       "format=duration",
                       "-of",
@@ -722,350 +749,432 @@ jobs:
               )
 
               duration = float(
-                  probe.stdout.strip()
+                  p.stdout.strip()
               )
 
               frames = max(
-                  1,
-                  int(duration * FPS)
+                  2,
+                  int(
+                      duration * FPS
+                  )
               )
 
-              # Different motion per scene.
-              # Very small movement = premium cinematic feel.
-              mode = index % 6
+              # --------------------------------------------------------
+              # Real camera motion
+              #
+              # Image is rendered at larger size.
+              # Camera continuously moves through it.
+              # --------------------------------------------------------
 
-              if mode == 0:
-                  zoom = (
-                      f"zoom='min(zoom+0.00055,1.10)':"
-                      f"x='iw/2-(iw/zoom/2)':"
-                      f"y='ih/2-(ih/zoom/2)'"
+              zoom_start = 1.02
+              zoom_end = 1.09
+
+              if motion == "push_in":
+
+                  z = (
+                      f"zoom="
+                      f"'{zoom_start}+"
+                      f"({zoom_end-zoom_start})*"
+                      f"on/{frames-1}'"
                   )
 
-              elif mode == 1:
-                  zoom = (
-                      f"zoom='min(zoom+0.00050,1.09)':"
-                      f"x='(iw-iw/zoom)*on/{max(frames-1,1)}':"
-                      f"y='ih/2-(ih/zoom/2)'"
+                  x = (
+                      "x='iw/2-(iw/zoom/2)'"
                   )
 
-              elif mode == 2:
-                  zoom = (
-                      f"zoom='min(zoom+0.00050,1.09)':"
-                      f"x='(iw-iw/zoom)*(1-on/{max(frames-1,1)})':"
-                      f"y='ih/2-(ih/zoom/2)'"
+                  y = (
+                      "y='ih/2-(ih/zoom/2)'"
                   )
 
-              elif mode == 3:
-                  zoom = (
-                      f"zoom='min(zoom+0.00048,1.085)':"
-                      f"x='iw/2-(iw/zoom/2)':"
-                      f"y='(ih-ih/zoom)*on/{max(frames-1,1)}'"
+              elif motion == "pull_out":
+
+                  z = (
+                      f"zoom="
+                      f"'{zoom_end}-"
+                      f"({zoom_end-zoom_start})*"
+                      f"on/{frames-1}'"
                   )
 
-              elif mode == 4:
-                  zoom = (
-                      f"zoom='min(zoom+0.00048,1.085)':"
-                      f"x='iw/2-(iw/zoom/2)':"
-                      f"y='(ih-ih/zoom)*(1-on/{max(frames-1,1)})'"
+                  x = (
+                      "x='iw/2-(iw/zoom/2)'"
+                  )
+
+                  y = (
+                      "y='ih/2-(ih/zoom/2)'"
+                  )
+
+              elif motion == "track_left":
+
+                  z = (
+                      "zoom='1.075'"
+                  )
+
+                  x = (
+                      f"x='(iw-iw/zoom)*"
+                      f"(1-on/{frames-1})'"
+                  )
+
+                  y = (
+                      "y='ih/2-(ih/zoom/2)'"
+                  )
+
+              elif motion == "track_right":
+
+                  z = (
+                      "zoom='1.075'"
+                  )
+
+                  x = (
+                      f"x='(iw-iw/zoom)*"
+                      f"on/{frames-1}"
+                  )
+
+                  y = (
+                      "y='ih/2-(ih/zoom/2)'"
+                  )
+
+              elif motion == "rise":
+
+                  z = (
+                      "zoom='1.075'"
+                  )
+
+                  x = (
+                      "x='iw/2-(iw/zoom/2)'"
+                  )
+
+                  y = (
+                      f"y='(ih-ih/zoom)*"
+                      f"(1-on/{frames-1})'"
+                  )
+
+              elif motion == "descend":
+
+                  z = (
+                      "zoom='1.075'"
+                  )
+
+                  x = (
+                      "x='iw/2-(iw/zoom/2)'"
+                  )
+
+                  y = (
+                      f"y='(ih-ih/zoom)*"
+                      f"on/{frames-1}"
+                  )
+
+              elif motion == "parallax":
+
+                  z = (
+                      "zoom='1.085'"
+                  )
+
+                  x = (
+                      f"x='(iw-iw/zoom)*"
+                      f"(0.25+0.5*on/{frames-1})'"
+                  )
+
+                  y = (
+                      f"y='(ih-ih/zoom)*"
+                      f"(0.65-0.3*on/{frames-1})'"
+                  )
+
+              elif motion == "orbit":
+
+                  z = (
+                      "zoom='1.065'"
+                  )
+
+                  x = (
+                      f"x='(iw-iw/zoom)*"
+                      f"(0.5+0.18*sin("
+                      f"on/{frames-1}*PI*2))'"
+                  )
+
+                  y = (
+                      f"y='(ih-ih/zoom)*"
+                      f"(0.5+0.12*cos("
+                      f"on/{frames-1}*PI*2))'"
                   )
 
               else:
-                  zoom = (
-                      f"zoom='min(zoom+0.00042,1.08)':"
-                      f"x='(iw-iw/zoom)*0.5':"
-                      f"y='(ih-ih/zoom)*0.5'"
+
+                  z = (
+                      "zoom='1.06'"
                   )
 
+                  x = (
+                      "x='iw/2-(iw/zoom/2)'"
+                  )
+
+                  y = (
+                      "y='ih/2-(ih/zoom/2)'"
+                  )
+
+              # --------------------------------------------------------
+              # Cinematic motion
+              # --------------------------------------------------------
+
               vf = (
-                  f"scale={width}:{height}:"
-                  f"force_original_aspect_ratio=increase,"
-                  f"crop={width}:{height},"
+                  "scale="
+                  f"{int(w*1.12)}:"
+                  f"{int(h*1.12)}:"
+                  "force_original_aspect_ratio=increase,"
+                  f"crop={int(w*1.12)}:{int(h*1.12)},"
                   f"zoompan="
-                  f"{zoom}:"
-                  f"d=1:"
-                  f"s={width}x{height}:"
+                  f"{z}:"
+                  f"{x}:"
+                  f"{y}:"
+                  "d=1:"
+                  f"s={w}x{h}:"
                   f"fps={FPS},"
-                  f"format=yuv420p"
+                  "format=yuv420p"
               )
 
               run([
                   "ffmpeg",
                   "-y",
-                  "-loop", "1",
-                  "-i", str(image),
-                  "-i", str(audio),
-                  "-vf", vf,
-                  "-t", f"{duration:.3f}",
-                  "-r", str(FPS),
-                  "-c:v", "libx264",
-                  "-preset", "medium",
-                  "-crf", "18",
-                  "-pix_fmt", "yuv420p",
-                  "-c:a", "aac",
-                  "-b:a", "192k",
-                  "-movflags", "+faststart",
+                  "-loop",
+                  "1",
+                  "-i",
+                  str(image),
+                  "-i",
+                  str(audio),
+                  "-vf",
+                  vf,
+                  "-t",
+                  f"{duration:.3f}",
+                  "-r",
+                  str(FPS),
+                  "-c:v",
+                  "libx264",
+                  "-preset",
+                  "medium",
+                  "-crf",
+                  "18",
+                  "-pix_fmt",
+                  "yuv420p",
+                  "-c:a",
+                  "aac",
+                  "-b:a",
+                  "192k",
+                  "-shortest",
+                  "-movflags",
+                  "+faststart",
                   str(output)
               ])
 
-          # ==========================================================
-          # SMOOTH TRANSITION CONCAT
-          # ==========================================================
+          # ============================================================
+          # SMOOTH SCENE TRANSITIONS
+          # ============================================================
 
-          def concat_scenes(scene_files, output):
+          def join_scenes(
+              videos,
+              output
+          ):
 
-              list_file = ROOT / (
-                  "long_concat.txt"
-                  if "long" in str(output)
-                  else "short_concat.txt"
+              # First normalize every scene,
+              # then use FFmpeg concat.
+              list_file = (
+                  ROOT /
+                  f"{output.stem}_list.txt"
               )
 
-              with open(list_file, "w") as f:
-                  for item in scene_files:
+              with open(
+                  list_file,
+                  "w"
+              ) as f:
+
+                  for video in videos:
+
                       f.write(
-                          f"file '{Path(item).resolve()}'\n"
+                          "file '"
+                          f"{Path(video).resolve()}"
+                          "'\n"
                       )
 
               run([
                   "ffmpeg",
                   "-y",
-                  "-f", "concat",
-                  "-safe", "0",
-                  "-i", str(list_file),
-                  "-c", "copy",
-                  "-movflags", "+faststart",
+                  "-f",
+                  "concat",
+                  "-safe",
+                  "0",
+                  "-i",
+                  str(list_file),
+                  "-c",
+                  "copy",
+                  "-movflags",
+                  "+faststart",
                   str(output)
               ])
 
-          # ==========================================================
-          # BUILD LONG
-          # ==========================================================
+          # ============================================================
+          # LONG VIDEO
+          # ============================================================
 
           def build_long(pkg):
 
-              chunks = split_script(
+              parts = split_script(
                   pkg["script"],
                   10
               )
 
               videos = []
 
-              for i, chunk in enumerate(chunks):
-
-                  scene_num = i + 1
-
-                  image = LONG_DIR / (
-                      f"scene_{scene_num:02d}.jpg"
-                  )
-
-                  audio = AUDIO_DIR / (
-                      f"long_{scene_num:02d}.mp3"
-                  )
-
-                  video = LONG_DIR / (
-                      f"scene_{scene_num:02d}.mp4"
-                  )
-
-                  query = pkg["visual_search"][
-                      i % len(pkg["visual_search"])
-                  ]
+              for i, text in enumerate(parts):
 
                   print(
-                      f"\nLONG SCENE {scene_num}/"
-                      f"{len(chunks)}"
+                      f"\nLONG SCENE "
+                      f"{i+1}/10"
                   )
 
-                  create_visual(
-                      query,
+                  scene = pkg["scenes"][
+                      i
+                  ]
+
+                  image = (
+                      LONG /
+                      f"scene_{i+1:02d}.jpg"
+                  )
+
+                  audio = (
+                      AUDIO /
+                      f"long_{i+1:02d}.mp3"
+                  )
+
+                  video = (
+                      LONG /
+                      f"scene_{i+1:02d}.mp4"
+                  )
+
+                  prepare_visual(
+                      scene["visual"],
                       image,
-                      vertical=False,
-                      scene_index=i
+                      False
                   )
 
-                  tts(
-                      chunk,
+                  make_tts(
+                      text,
                       audio
                   )
 
-                  make_scene_video(
+                  animated_scene(
                       image,
                       audio,
                       video,
-                      vertical=False,
-                      index=i
+                      scene["motion_type"],
+                      False
                   )
 
-                  videos.append(video)
+                  videos.append(
+                      video
+                  )
 
-              final = ROOT / "TechMind_Studio_Long.mp4"
+              final = (
+                  ROOT /
+                  "TechMind_Studio_Long.mp4"
+              )
 
-              concat_scenes(
+              join_scenes(
                   videos,
                   final
               )
 
               return final
 
-          # ==========================================================
-          # BUILD SHORT
-          # ==========================================================
+          # ============================================================
+          # SHORT
+          # ============================================================
 
           def build_short(pkg):
 
-              chunks = split_script(
+              parts = split_script(
                   pkg["short_script"],
                   5
               )
 
               videos = []
 
-              for i, chunk in enumerate(chunks):
-
-                  scene_num = i + 1
-
-                  image = SHORT_DIR / (
-                      f"scene_{scene_num:02d}.jpg"
-                  )
-
-                  audio = AUDIO_DIR / (
-                      f"short_{scene_num:02d}.mp3"
-                  )
-
-                  video = SHORT_DIR / (
-                      f"scene_{scene_num:02d}.mp4"
-                  )
-
-                  query = pkg["visual_search"][
-                      (i + 3) %
-                      len(pkg["visual_search"])
-                  ]
+              for i, text in enumerate(parts):
 
                   print(
-                      f"\nSHORT SCENE {scene_num}/"
-                      f"{len(chunks)}"
+                      f"\nSHORT SCENE "
+                      f"{i+1}/5"
                   )
 
-                  create_visual(
-                      query,
+                  scene = pkg["scenes"][
+                      (i + 5) % 10
+                  ]
+
+                  image = (
+                      SHORT /
+                      f"scene_{i+1:02d}.jpg"
+                  )
+
+                  audio = (
+                      AUDIO /
+                      f"short_{i+1:02d}.mp3"
+                  )
+
+                  video = (
+                      SHORT /
+                      f"scene_{i+1:02d}.mp4"
+                  )
+
+                  prepare_visual(
+                      scene["visual"],
                       image,
-                      vertical=True,
-                      scene_index=i + 20
+                      True
                   )
 
-                  tts(
-                      chunk,
+                  make_tts(
+                      text,
                       audio
                   )
 
-                  make_scene_video(
+                  animated_scene(
                       image,
                       audio,
                       video,
-                      vertical=True,
-                      index=i + 20
+                      scene["motion_type"],
+                      True
                   )
 
-                  videos.append(video)
+                  videos.append(
+                      video
+                  )
 
-              final = ROOT / "TechMind_Studio_Short.mp4"
+              final = (
+                  ROOT /
+                  "TechMind_Studio_Short.mp4"
+              )
 
-              concat_scenes(
+              join_scenes(
                   videos,
                   final
               )
 
               return final
 
-          # ==========================================================
-          # THUMBNAIL
-          # ==========================================================
+          # ============================================================
+          # YOUTUBE
+          # ============================================================
 
-          def create_thumbnail(pkg):
-
-              out = ROOT / "thumbnail.jpg"
-
-              img = Image.new(
-                  "RGB",
-                  (1280, 720),
-                  (8, 12, 20)
-              )
-
-              draw = ImageDraw.Draw(img)
-
-              title = pkg["title"]
-
-              # thumbnail can have title;
-              # this does NOT appear inside the video.
-              f1 = font(62, True)
-              f2 = font(34, True)
-
-              words = title.split()
-              lines = []
-              line = ""
-
-              for word in words:
-                  test = (
-                      line + " " + word
-                  ).strip()
-
-                  if draw.textbbox(
-                      (0, 0),
-                      test,
-                      font=f1
-                  )[2] < 1080:
-                      line = test
-                  else:
-                      if line:
-                          lines.append(line)
-                      line = word
-
-              if line:
-                  lines.append(line)
-
-              y = 230
-
-              for line in lines[:4]:
-
-                  draw.text(
-                      (70, y),
-                      line,
-                      font=f1,
-                      fill="white",
-                      stroke_width=3,
-                      stroke_fill="black"
-                  )
-
-                  y += 80
-
-              draw.text(
-                  (70, 80),
-                  BRAND,
-                  font=f2,
-                  fill="white"
-              )
-
-              img.save(
-                  out,
-                  "JPEG",
-                  quality=97
-              )
-
-              return out
-
-          # ==========================================================
-          # YOUTUBE UPLOAD
-          # ==========================================================
-
-          def youtube_service():
+          def youtube():
 
               from google.oauth2.credentials import Credentials
               from googleapiclient.discovery import build
 
-              token = os.environ["YOUTUBE_TOKEN_JSON"]
-
               creds = Credentials.from_authorized_user_info(
-                  json.loads(token),
+                  json.loads(
+                      os.environ[
+                          "YOUTUBE_TOKEN_JSON"
+                      ]
+                  ),
                   scopes=[
-                      "https://www.googleapis.com/auth/youtube.upload"
+                      "https://www.googleapis.com/"
+                      "auth/youtube.upload"
                   ]
               )
 
@@ -1075,24 +1184,24 @@ jobs:
                   credentials=creds
               )
 
-          def upload_video(
+          def upload(
               service,
-              video_path,
+              path,
               title,
               description,
-              tags,
-              is_short=False
+              tags
           ):
 
-              from googleapiclient.http import MediaFileUpload
+              from googleapiclient.http import (
+                  MediaFileUpload
+              )
 
               body = {
                   "snippet": {
                       "title": title,
                       "description": description,
                       "tags": tags,
-                      "categoryId": "28",
-                      "defaultLanguage": "en"
+                      "categoryId": "28"
                   },
                   "status": {
                       "privacyStatus": "public",
@@ -1100,75 +1209,96 @@ jobs:
                   }
               }
 
-              if is_short:
-                  body["snippet"]["description"] += (
-                      "\n\n#Shorts"
-                  )
-
               media = MediaFileUpload(
-                  str(video_path),
+                  str(path),
+                  mimetype="video/mp4",
                   chunksize=-1,
                   resumable=True
               )
 
-              request = service.videos().insert(
+              req = service.videos().insert(
                   part="snippet,status",
                   body=body,
                   media_body=media
               )
 
-              response = request.execute()
+              response = req.execute()
 
               print(
-                  "YOUTUBE UPLOADED:",
-                  response.get("id")
+                  "UPLOADED:",
+                  response["id"]
               )
 
-              return response.get("id")
+              return response["id"]
 
-          # ==========================================================
+          # ============================================================
           # MAIN
-          # ==========================================================
+          # ============================================================
 
           def main():
 
-              print("=" * 70)
-              print("TECHMIND STUDIO PRODUCTION ENGINE")
-              print("=" * 70)
+              print(
+                  "\n"
+                  + "=" * 70
+              )
 
-              pkg = create_package()
+              print(
+                  "TECHMIND STUDIO"
+              )
 
-              print("\nTOPIC:", pkg["topic"])
-              print("TITLE:", pkg["title"])
+              print(
+                  "REALISTIC MOTION ENGINE"
+              )
 
-              long_video = build_long(pkg)
-              short_video = build_short(pkg)
-              thumbnail = create_thumbnail(pkg)
+              print(
+                  "=" * 70
+              )
 
-              # ------------------------------------------------------
-              # QUALITY CHECKS
-              # ------------------------------------------------------
+              pkg = create_content()
 
-              for video in [
+              print(
+                  "\nTOPIC:",
+                  pkg["topic"]
+              )
+
+              print(
+                  "TITLE:",
+                  pkg["title"]
+              )
+
+              long_video = build_long(
+                  pkg
+              )
+
+              short_video = build_short(
+                  pkg
+              )
+
+              # --------------------------------------------------------
+              # Quality check
+              # --------------------------------------------------------
+
+              for p in [
                   long_video,
                   short_video
               ]:
 
-                  if not video.exists():
+                  if not p.exists():
                       raise RuntimeError(
-                          f"Missing video: {video}"
+                          f"Missing: {p}"
                       )
 
-                  if video.stat().st_size < 1_000_000:
+                  if p.stat().st_size < 1_000_000:
                       raise RuntimeError(
-                          f"Video suspiciously small: {video}"
+                          f"Invalid video: {p}"
                       )
 
-              # Long duration check
+              # Long duration
               probe = subprocess.run(
                   [
                       "ffprobe",
-                      "-v", "error",
+                      "-v",
+                      "error",
                       "-show_entries",
                       "format=duration",
                       "-of",
@@ -1184,118 +1314,127 @@ jobs:
               )
 
               print(
-                  f"LONG VIDEO DURATION: {duration:.2f}s"
+                  f"\nLONG DURATION: "
+                  f"{duration:.2f}s"
               )
 
               if duration < 240:
                   raise RuntimeError(
-                      "Long video is below 4 minutes."
+                      "Long video below 4 minutes"
                   )
 
-              # ------------------------------------------------------
-              # METADATA
-              # ------------------------------------------------------
+              # --------------------------------------------------------
+              # Description
+              # --------------------------------------------------------
 
-              description = pkg["description"]
-
-              description += "\n\n"
-
-              description += " ".join(
-                  pkg["hashtags"]
-              )
-
-              description += (
-                  "\n\nProduced by TechMind Studio."
+              description = (
+                  pkg["description"]
+                  + "\n\n"
+                  + " ".join(
+                      pkg["hashtags"]
+                  )
+                  + "\n\n"
+                  + "Produced by TechMind Studio."
               )
 
               if IMAGE_SOURCES:
+
                   description += (
                       "\n\nVisual sources:"
                   )
 
-                  for item in IMAGE_SOURCES:
+                  for source in IMAGE_SOURCES:
+
                       description += (
-                          f"\n- {item['title']}: "
-                          f"{item['url']}"
+                          "\n- "
+                          + source["title"]
+                          + ": "
+                          + source["url"]
                       )
 
-              service = youtube_service()
+              service = youtube()
 
-              # ------------------------------------------------------
-              # LONG UPLOAD
-              # ------------------------------------------------------
+              # --------------------------------------------------------
+              # LONG
+              # --------------------------------------------------------
 
-              long_id = upload_video(
+              long_id = upload(
                   service,
                   long_video,
                   pkg["title"],
                   description,
-                  pkg["tags"],
-                  is_short=False
+                  pkg["tags"]
               )
 
-              # ------------------------------------------------------
-              # SHORT UPLOAD
-              # ------------------------------------------------------
+              # --------------------------------------------------------
+              # SHORT
+              # --------------------------------------------------------
 
               short_title = (
                   pkg["title"]
-                  if "#Shorts" in pkg["title"]
-                  else pkg["title"] + " #Shorts"
+                  + " #Shorts"
               )
 
-              short_id = upload_video(
+              short_id = upload(
                   service,
                   short_video,
                   short_title,
                   description,
-                  pkg["tags"],
-                  is_short=True
+                  pkg["tags"]
               )
 
-              # ------------------------------------------------------
-              # SAVE PACKAGE
-              # ------------------------------------------------------
+              # --------------------------------------------------------
+              # Package
+              # --------------------------------------------------------
 
-              package_out = ROOT / "package.json"
-
-              package_out.write_text(
+              (ROOT / "package.json").write_text(
                   json.dumps(
                       {
                           **pkg,
-                          "long_video_id": long_id,
-                          "short_video_id": short_id,
-                          "image_sources": IMAGE_SOURCES
+                          "long_id": long_id,
+                          "short_id": short_id,
+                          "image_sources":
+                              IMAGE_SOURCES
                       },
                       indent=2,
                       ensure_ascii=False
                   )
               )
 
-              print("\n" + "=" * 70)
-              print("PRODUCTION COMPLETE")
-              print("=" * 70)
-              print("LONG ID :", long_id)
-              print("SHORT ID:", short_id)
-              print("DURATION:", duration)
-              print("=" * 70)
+              print(
+                  "\n"
+                  + "=" * 70
+              )
+
+              print(
+                  "SUCCESS"
+              )
+
+              print(
+                  "LONG:",
+                  long_id
+              )
+
+              print(
+                  "SHORT:",
+                  short_id
+              )
+
+              print(
+                  "=" * 70
+              )
 
 
           if __name__ == "__main__":
               main()
+
           PY
 
-      # ============================================================
-      # 3. RUN CREATOR
-      # ============================================================
       - name: Generate and upload
         run: |
           python creator.py
 
-      # ============================================================
-      # 4. SAVE OUTPUTS
-      # ============================================================
-      - name: Upload production artifacts
+      - name: Save production files
         if: always()
         uses: actions/upload-artifact@v4
         with:
