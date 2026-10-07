@@ -1,122 +1,142 @@
-      # =========================================================
-      # 3. GEMINI CREATES SCRIPT + TITLE + DESCRIPTION + TAGS
-      # =========================================================
-      - name: Generate complete content package
+name: TechMind AI Creator - Daily Production
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every day at 6:00 PM India time (12:30 UTC)
+    - cron: "30 12 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  create-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. INSTALL SYSTEM TOOLS
+      # ============================================================
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      # ============================================================
+      # 3. INSTALL PYTHON PACKAGES
+      # ============================================================
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            requests \
+            pillow \
+            edge-tts \
+            google-api-python-client \
+            google-auth \
+            google-auth-httplib2 \
+            google-auth-oauthlib
+
+      # ============================================================
+      # 4. CREATE COMPLETE AI PRODUCTION
+      # ============================================================
+      - name: Create complete production video
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
         run: |
-          python - <<'PY'
-          import requests
-          import json
+
+          cat > creator.py <<'PY'
           import os
+          import re
+          import json
           import time
+          import base64
+          import html
+          import math
+          import subprocess
+          import textwrap
+          import requests
+          import xml.etree.ElementTree as ET
 
-          API_KEY = os.environ["GEMINI_API_KEY"]
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-          topic = open(
-              "topic.txt",
-              encoding="utf-8"
-          ).read().strip()
+          # ==========================================================
+          # CONFIG
+          # ==========================================================
 
-          source = open(
-              "source.txt",
-              encoding="utf-8"
-          ).read().strip()
+          GEMINI_KEY = os.environ["GEMINI_API_KEY"]
+          YOUTUBE_TOKEN_JSON = os.environ["YOUTUBE_TOKEN_JSON"]
 
-          prompt = f"""
-          You are the senior producer of a technology YouTube channel called TechMind.
+          TEXT_MODEL = "gemini-3.8-flash"
+          IMAGE_MODEL = "gemini-3.1-flash-image"
 
-          CURRENT AI TOPIC:
-          {topic}
+          WORK = Path("production")
+          SCENES = WORK / "scenes"
+          SHORT_SCENES = WORK / "short_scenes"
 
-          SOURCE:
-          {source}
+          WORK.mkdir(exist_ok=True)
+          SCENES.mkdir(exist_ok=True)
+          SHORT_SCENES.mkdir(exist_ok=True)
 
-          Create a complete YouTube content package.
+          # ==========================================================
+          # HELPERS
+          # ==========================================================
 
-          LONG-FORM VIDEO:
-          - Write a 4 to 5 minute spoken YouTube script.
-          - Start with a powerful hook in the first 10 seconds.
-          - Explain what happened.
-          - Explain why it matters.
-          - Explain how the technology works.
-          - Give practical real-world examples.
-          - Explain who can use it.
-          - Do not invent facts.
-          - Use only information supported by the source.
-          - Make the narration natural and engaging.
-          - End with a short TechMind subscribe CTA.
+          def run(cmd):
+              print("RUN:", " ".join(str(x) for x in cmd))
+              result = subprocess.run(
+                  cmd,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True
+              )
+              print(result.stdout[-6000:])
+              if result.returncode != 0:
+                  raise RuntimeError(
+                      "Command failed:\n" + " ".join(str(x) for x in cmd)
+                  )
+              return result.stdout
 
-          TITLE:
-          - Attractive and clickable.
-          - Truthful.
-          - Maximum 90 characters.
+          def get_font(size, bold=False):
+              candidates = [
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                  if bold else
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                  "/usr/share/fonts/truetype/liberation2/"
+                  + ("LiberationSans-Bold.ttf"
+                     if bold else "LiberationSans-Regular.ttf")
+              ]
 
-          DESCRIPTION:
-          - 2 to 4 useful paragraphs.
-          - Explain the video clearly.
-          - Add relevant hashtags at the end.
-          - No spam.
+              for path in candidates:
+                  if os.path.exists(path):
+                      return ImageFont.truetype(path, size=size)
 
-          TAGS:
-          - Generate 8 to 15 relevant YouTube tags.
+              return ImageFont.load_default()
 
-          SHORT:
-          - Write a 35 to 55 second YouTube Short script.
-          - Very strong opening hook.
-          - Focus on the most interesting part.
-          - Fast, natural narration.
-          - End with a short CTA.
+          def clean_text(s):
+              s = re.sub(r"\s+", " ", str(s or "")).strip()
+              return s
 
-          IMPORTANT:
-          Return ONLY valid JSON.
-          Do not use Markdown.
-          Do not use ```json.
-          Do not add explanations outside the JSON.
+          # ==========================================================
+          # GEMINI TEXT
+          # ==========================================================
 
-          RETURN THIS EXACT JSON STRUCTURE:
-
-          {{
-            "title": "YouTube title",
-            "description": "YouTube description",
-            "hashtags": [
-              "#AI",
-              "#ArtificialIntelligence"
-            ],
-            "tags": [
-              "AI",
-              "Artificial Intelligence"
-            ],
-            "long_script": "Full long-form script",
-            "short_script": "Full Short script"
-          }}
-          """
-
-          # -----------------------------------------------------
-          # MODELS
-          # -----------------------------------------------------
-          models = [
-              "gemini-3.8-flash",
-              "gemini-3.7-flash"
-          ]
-
-          response = None
-          successful_model = None
-
-          # -----------------------------------------------------
-          # TRY PRIMARY MODEL THEN AUTOMATIC FALLBACK
-          # -----------------------------------------------------
-          for model in models:
-
-              print("")
-              print("========================================")
-              print("Trying Gemini model:", model)
-              print("========================================")
+          def gemini_text(prompt, retries=5):
 
               url = (
                   "https://generativelanguage.googleapis.com/"
                   "v1beta/models/"
-                  + model
+                  + TEXT_MODEL
                   + ":generateContent"
               )
 
@@ -129,328 +149,1387 @@
                               }
                           ]
                       }
-                  ]
+                  ],
+                  "generationConfig": {
+                      "temperature": 0.8,
+                      "responseMimeType": "application/json"
+                  }
               }
 
-              model_success = False
-
-              for attempt in range(3):
+              for attempt in range(retries):
 
                   print(
-                      f"Attempt {attempt + 1}/3 "
-                      f"for {model}"
+                      f"Gemini text attempt "
+                      f"{attempt + 1}/{retries}"
                   )
 
                   try:
-
-                      response = requests.post(
+                      r = requests.post(
                           url,
                           headers={
-                              "x-goog-api-key": API_KEY,
+                              "x-goog-api-key": GEMINI_KEY,
                               "Content-Type": "application/json"
                           },
                           json=payload,
                           timeout=180
                       )
 
-                      print(
-                          "Gemini HTTP status:",
-                          response.status_code
+                      print("Gemini status:", r.status_code)
+
+                      if r.status_code == 503:
+                          time.sleep(15 * (attempt + 1))
+                          continue
+
+                      if r.status_code == 429:
+                          time.sleep(20 * (attempt + 1))
+                          continue
+
+                      r.raise_for_status()
+
+                      data = r.json()
+
+                      text = (
+                          data["candidates"][0]
+                          ["content"]["parts"][0]["text"]
+                      ).strip()
+
+                      # Remove accidental markdown fences
+                      text = re.sub(
+                          r"^```(?:json)?\s*",
+                          "",
+                          text,
+                          flags=re.I
                       )
+                      text = re.sub(
+                          r"\s*```$",
+                          "",
+                          text
+                      ).strip()
 
-                      # -------------------------------------------------
-                      # TEMPORARY SERVER ERROR
-                      # -------------------------------------------------
-                      if response.status_code == 503:
+                      return json.loads(text)
 
-                          print(
-                              f"{model} is temporarily unavailable."
-                          )
-
-                          if attempt < 2:
-
-                              wait_time = 15 * (attempt + 1)
-
-                              print(
-                                  f"Waiting {wait_time} seconds..."
-                              )
-
-                              time.sleep(wait_time)
-                              continue
-
-                          print(
-                              f"{model} failed after 3 attempts."
-                          )
-
-                          break
-
-                      # -------------------------------------------------
-                      # OTHER HTTP ERROR
-                      # -------------------------------------------------
-                      response.raise_for_status()
-
-                      model_success = True
-                      successful_model = model
-
-                      print(
-                          "Gemini request successful using:",
-                          model
-                      )
-
-                      break
-
-                  except requests.exceptions.Timeout:
-
-                      print(
-                          f"{model} request timed out."
-                      )
-
-                      if attempt < 2:
-
-                          wait_time = 15 * (attempt + 1)
-
-                          print(
-                              f"Retrying in {wait_time} seconds..."
-                          )
-
-                          time.sleep(wait_time)
-
-                      else:
-
-                          print(
-                              f"{model} timed out after 3 attempts."
-                          )
-
-                  except requests.exceptions.RequestException as error:
-
-                      print(
-                          "Gemini request error:",
-                          error
-                      )
-
-                      if attempt < 2:
-
-                          wait_time = 15 * (attempt + 1)
-
-                          print(
-                              f"Retrying in {wait_time} seconds..."
-                          )
-
-                          time.sleep(wait_time)
-
-                      else:
-
-                          print(
-                              f"{model} failed after 3 attempts."
-                          )
-
-              if model_success:
-                  break
-
-          # -----------------------------------------------------
-          # NO MODEL WORKED
-          # -----------------------------------------------------
-          if not model_success:
+                  except Exception as e:
+                      print("Gemini error:", repr(e))
+                      if attempt < retries - 1:
+                          time.sleep(10 * (attempt + 1))
 
               raise RuntimeError(
-                  "All Gemini models failed. "
-                  "Tried Gemini 3.8 Flash and Gemini 3.7 Flash."
+                  "Gemini text generation failed."
               )
 
-          # -----------------------------------------------------
-          # READ RESPONSE
-          # -----------------------------------------------------
-          data = response.json()
+          # ==========================================================
+          # FRESH AI NEWS
+          # ==========================================================
 
-          try:
+          def get_ai_news():
 
-              text = (
-                  data["candidates"][0]
-                  ["content"]["parts"][0]["text"]
-              )
+              feeds = [
+                  "https://news.google.com/rss/search?"
+                  "q=artificial+intelligence+when:1d&hl=en-US&gl=US&ceid=US:en",
 
-          except (KeyError, IndexError):
+                  "https://news.google.com/rss/search?"
+                  "q=AI+technology+when:1d&hl=en-US&gl=US&ceid=US:en",
 
-              print("")
-              print("Unexpected Gemini response:")
-              print(
-                  json.dumps(
-                      data,
-                      indent=2
-                  )
-              )
+                  "https://news.google.com/rss/search?"
+                  "q=generative+AI+when:1d&hl=en-US&gl=US&ceid=US:en"
+              ]
 
+              articles = []
+
+              for feed_url in feeds:
+
+                  try:
+                      r = requests.get(
+                          feed_url,
+                          timeout=30,
+                          headers={
+                              "User-Agent":
+                              "Mozilla/5.0 TechMindBot"
+                          }
+                      )
+
+                      r.raise_for_status()
+
+                      root = ET.fromstring(r.text)
+
+                      for item in root.findall(".//item")[:10]:
+
+                          title = item.findtext("title") or ""
+                          link = item.findtext("link") or ""
+                          description = (
+                              item.findtext("description") or ""
+                          )
+
+                          title = html.unescape(
+                              re.sub("<.*?>", " ", title)
+                          ).strip()
+
+                          description = html.unescape(
+                              re.sub("<.*?>", " ", description)
+                          ).strip()
+
+                          if title:
+                              articles.append({
+                                  "title": title,
+                                  "description": description[:800],
+                                  "link": link
+                              })
+
+                  except Exception as e:
+                      print("RSS error:", e)
+
+              # Remove duplicate titles
+              seen = set()
+              unique = []
+
+              for item in articles:
+                  key = item["title"].lower()
+
+                  if key not in seen:
+                      seen.add(key)
+                      unique.append(item)
+
+              return unique[:25]
+
+          # ==========================================================
+          # CHOOSE TOPIC + CREATE PRODUCTION PACKAGE
+          # ==========================================================
+
+          news = get_ai_news()
+
+          if not news:
               raise RuntimeError(
-                  "Could not read Gemini response."
+                  "Could not obtain fresh AI news."
               )
 
-          text = text.strip()
+          news_text = json.dumps(
+              news,
+              ensure_ascii=False,
+              indent=2
+          )
 
-          # -----------------------------------------------------
-          # REMOVE MARKDOWN CODE FENCES
-          # -----------------------------------------------------
-          if text.startswith("```"):
+          producer_prompt = f"""
+          You are the senior producer for a professional AI/technology
+          YouTube channel called TechMind.
 
-              lines = text.splitlines()
+          Today is October 7, 2026.
 
-              if lines:
-                  lines = lines[1:]
+          Choose ONE genuinely interesting, current AI/technology story
+          from the supplied news list.
 
-              if lines and lines[-1].strip() == "```":
-                  lines = lines[:-1]
+          NEWS:
+          {news_text}
 
-              text = "\n".join(lines).strip()
+          IMPORTANT:
+          - Do not invent facts.
+          - Do not make unsupported claims.
+          - The chosen story must be understandable to a general audience.
+          - Prefer a story with strong viewer curiosity.
+          - The final long video must feel like a professional creator
+            explaining something important, NOT like an AI reading an article.
 
-          # -----------------------------------------------------
-          # PARSE JSON
-          # -----------------------------------------------------
-          try:
+          Create a complete production package.
 
-              package = json.loads(text)
+          LONG VIDEO:
+          - 4 to 5 minutes.
+          - Target 620-720 spoken words.
+          - 6 distinct scenes.
+          - Every scene should contain roughly 90-125 spoken words.
+          - Strong hook in scene 1.
+          - Explain what happened.
+          - Explain why it matters.
+          - Explain how it works.
+          - Give practical examples.
+          - Explain who should care.
+          - Include a useful conclusion.
+          - Natural spoken English.
+          - No filler.
+          - No fake quotes.
+          - No fake statistics.
 
-          except json.JSONDecodeError:
+          TITLE:
+          - Maximum 90 characters.
+          - Clickable but truthful.
+          - Include ONE relevant emoji.
+          - Do not use ALL CAPS.
 
-              print("")
-              print("Gemini returned invalid JSON:")
-              print(text)
+          DESCRIPTION:
+          - Professional YouTube description.
+          - 2-4 useful paragraphs.
+          - Include hashtags at the end.
 
-              raise RuntimeError(
-                  "Gemini output was not valid JSON."
-              )
+          TAGS:
+          - 10-15 relevant YouTube search tags.
 
-          # -----------------------------------------------------
-          # VALIDATE JSON
-          # -----------------------------------------------------
-          required_fields = [
+          LONG SCENES:
+          Each scene needs:
+          - scene_number
+          - scene_title
+          - narration
+          - visual_prompt
+
+          VISUAL PROMPTS:
+          - 16:9 cinematic editorial technology visuals.
+          - Each scene must look visually different.
+          - No generic stock-photo look.
+          - No watermarks.
+          - No logos unless essential to the story.
+          - Do not put important text inside the generated image.
+          - Visually communicate the narration.
+
+          SHORT:
+          - 35-55 seconds.
+          - Strong hook.
+          - Fast but natural.
+          - 4 distinct vertical scenes.
+          - Each scene needs:
+            scene_number
+            scene_title
+            narration
+            visual_prompt
+
+          SHORT VISUALS:
+          - 9:16 vertical cinematic technology visuals.
+          - No generic stock-photo look.
+          - No watermarks.
+          - No important text inside generated images.
+
+          Return ONLY JSON:
+
+          {{
+            "topic": "...",
+            "source_url": "...",
+            "title": "...",
+            "description": "...",
+            "hashtags": ["#AI", "#Technology"],
+            "tags": ["AI", "artificial intelligence"],
+            "long_scenes": [
+              {{
+                "scene_number": 1,
+                "scene_title": "...",
+                "narration": "...",
+                "visual_prompt": "..."
+              }}
+            ],
+            "short_scenes": [
+              {{
+                "scene_number": 1,
+                "scene_title": "...",
+                "narration": "...",
+                "visual_prompt": "..."
+              }}
+            ]
+          }}
+          """
+
+          package = gemini_text(producer_prompt)
+
+          required = [
+              "topic",
               "title",
               "description",
               "hashtags",
               "tags",
-              "long_script",
-              "short_script"
+              "long_scenes",
+              "short_scenes"
           ]
 
-          for field in required_fields:
-
+          for field in required:
               if field not in package:
-
                   raise RuntimeError(
-                      f"Missing Gemini field: {field}"
+                      f"Missing production field: {field}"
                   )
 
-          # -----------------------------------------------------
-          # SAVE TITLE
-          # -----------------------------------------------------
-          with open(
-              "title.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              f.write(
-                  str(
-                      package["title"]
-                  ).strip()
+          if len(package["long_scenes"]) < 5:
+              raise RuntimeError(
+                  "Not enough long-form scenes."
               )
 
-          # -----------------------------------------------------
-          # SAVE DESCRIPTION
-          # -----------------------------------------------------
-          with open(
-              "description.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              f.write(
-                  str(
-                      package["description"]
-                  ).strip()
+          if len(package["short_scenes"]) < 3:
+              raise RuntimeError(
+                  "Not enough Short scenes."
               )
 
-          # -----------------------------------------------------
-          # SAVE LONG SCRIPT
-          # -----------------------------------------------------
-          with open(
-              "long_script.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              f.write(
-                  str(
-                      package["long_script"]
-                  ).strip()
-              )
-
-          # -----------------------------------------------------
-          # SAVE SHORT SCRIPT
-          # -----------------------------------------------------
-          with open(
-              "short_script.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              f.write(
-                  str(
-                      package["short_script"]
-                  ).strip()
-              )
-
-          # -----------------------------------------------------
-          # SAVE TAGS
-          # -----------------------------------------------------
-          with open(
-              "tags.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              f.write(
-                  ",".join(
-                      str(tag).strip()
-                      for tag in package["tags"]
-                  )
-              )
-
-          # -----------------------------------------------------
-          # SAVE HASHTAGS
-          # -----------------------------------------------------
-          with open(
-              "hashtags.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
-              f.write(
-                  " ".join(
-                      str(tag).strip()
-                      for tag in package["hashtags"]
-                  )
-              )
-
-          # -----------------------------------------------------
-          # SUCCESS
-          # -----------------------------------------------------
-          print("")
-          print("========================================")
-          print("CONTENT PACKAGE CREATED SUCCESSFULLY")
-          print("========================================")
-          print("MODEL USED:")
-          print(successful_model)
-          print("")
-          print("TITLE:")
+          print("\n========================================")
+          print("TOPIC")
+          print(package["topic"])
+          print("\nTITLE")
           print(package["title"])
-          print("")
-          print(
-              "LONG SCRIPT CHARACTERS:",
-              len(package["long_script"])
+          print("\nLONG SCENES")
+          print(len(package["long_scenes"]))
+          print("\nSHORT SCENES")
+          print(len(package["short_scenes"]))
+          print("========================================\n")
+
+          # ==========================================================
+          # IMAGE GENERATION
+          # ==========================================================
+
+          def gemini_image(prompt, output_path, aspect_ratio):
+
+              url = (
+                  "https://generativelanguage.googleapis.com/"
+                  "v1beta/interactions"
+              )
+
+              payload = {
+                  "model": IMAGE_MODEL,
+                  "input": prompt,
+                  "response_format": {
+                      "type": "image",
+                      "mime_type": "image/jpeg",
+                      "aspect_ratio": aspect_ratio,
+                      "image_size": "1K"
+                  }
+              }
+
+              for attempt in range(5):
+
+                  try:
+
+                      print(
+                          "Generating image:",
+                          output_path
+                      )
+
+                      r = requests.post(
+                          url,
+                          headers={
+                              "x-goog-api-key": GEMINI_KEY,
+                              "Content-Type": "application/json"
+                          },
+                          json=payload,
+                          timeout=240
+                      )
+
+                      print(
+                          "Image API status:",
+                          r.status_code
+                      )
+
+                      if r.status_code in (429, 503):
+                          time.sleep(15 * (attempt + 1))
+                          continue
+
+                      r.raise_for_status()
+
+                      data = r.json()
+
+                      image_data = None
+
+                      if "output_image" in data:
+                          image_data = data[
+                              "output_image"
+                          ].get("data")
+
+                      if not image_data:
+                          for step in data.get("steps", []):
+                              if step.get("type") == "model_output":
+                                  for block in step.get(
+                                      "content", []
+                                  ):
+                                      if (
+                                          block.get("type")
+                                          == "image"
+                                      ):
+                                          image_data = block.get(
+                                              "data"
+                                          )
+                                          break
+
+                      if not image_data:
+                          raise RuntimeError(
+                              "Gemini returned no image."
+                          )
+
+                      with open(output_path, "wb") as f:
+                          f.write(
+                              base64.b64decode(image_data)
+                          )
+
+                      return
+
+                  except Exception as e:
+                      print(
+                          "Image generation error:",
+                          repr(e)
+                      )
+                      time.sleep(10 * (attempt + 1))
+
+              raise RuntimeError(
+                  "Image generation failed: "
+                  + str(output_path)
+              )
+
+          # ==========================================================
+          # GENERATE LONG-FORM VISUALS
+          # ==========================================================
+
+          for scene in package["long_scenes"]:
+
+              n = int(scene["scene_number"])
+
+              prompt = f"""
+              Create a premium cinematic 16:9 visual for a professional
+              AI technology YouTube video.
+
+              STORY:
+              {scene["narration"]}
+
+              VISUAL DIRECTION:
+              {scene["visual_prompt"]}
+
+              Style:
+              - cinematic
+              - modern technology journalism
+              - realistic
+              - high detail
+              - dramatic but credible lighting
+              - strong depth
+              - professional editorial composition
+              - visually interesting
+              - 16:9 landscape
+
+              Absolutely avoid:
+              - random generic office stock photography
+              - fake UI screenshots
+              - watermarks
+              - logos
+              - distorted people
+              - meaningless text
+              - huge text overlays
+
+              Do not write any important words in the image.
+              """
+
+              output = SCENES / f"scene_{n:02d}.jpg"
+
+              gemini_image(
+                  prompt,
+                  str(output),
+                  "16:9"
+              )
+
+          # ==========================================================
+          # GENERATE SHORT VISUALS
+          # ==========================================================
+
+          for scene in package["short_scenes"]:
+
+              n = int(scene["scene_number"])
+
+              prompt = f"""
+              Create a premium vertical 9:16 visual for a viral-style
+              AI technology YouTube Short.
+
+              STORY:
+              {scene["narration"]}
+
+              VISUAL DIRECTION:
+              {scene["visual_prompt"]}
+
+              Style:
+              cinematic, realistic, modern, high-detail,
+              technology journalism, strong depth, dramatic lighting.
+
+              Avoid:
+              generic stock photography,
+              watermarks,
+              logos,
+              meaningless text,
+              distorted people.
+
+              Do not write important text inside the image.
+              """
+
+              output = SHORT_SCENES / f"scene_{n:02d}.jpg"
+
+              gemini_image(
+                  prompt,
+                  str(output),
+                  "9:16"
+              )
+
+          # ==========================================================
+          # TTS
+          # ==========================================================
+
+          def tts(text, output):
+
+              text = clean_text(text)
+
+              cmd = [
+                  "edge-tts",
+                  "--voice",
+                  "en-US-GuyNeural",
+                  "--rate=-5%",
+                  "--volume=+0%",
+                  "--text",
+                  text,
+                  "--write-media",
+                  str(output)
+              ]
+
+              run(cmd)
+
+          # ==========================================================
+          # AUDIO DURATION
+          # ==========================================================
+
+          def duration(path):
+
+              output = run([
+                  "ffprobe",
+                  "-v", "error",
+                  "-show_entries",
+                  "format=duration",
+                  "-of",
+                  "default=noprint_wrappers=1:nokey=1",
+                  str(path)
+              ])
+
+              return float(output.strip())
+
+          # ==========================================================
+          # CREATE LONG SCENE VIDEOS
+          # ==========================================================
+
+          long_scene_files = []
+          long_scene_durations = []
+
+          for scene in package["long_scenes"]:
+
+              n = int(scene["scene_number"])
+
+              image = SCENES / f"scene_{n:02d}.jpg"
+              audio = SCENES / f"scene_{n:02d}.mp3"
+              video = SCENES / f"scene_{n:02d}.mp4"
+
+              tts(
+                  scene["narration"],
+                  audio
+              )
+
+              d = duration(audio)
+
+              # Subtle cinematic zoom.
+              vf = (
+                  "scale=2200:-2,"
+                  "crop=1920:1080,"
+                  "zoompan="
+                  "z='min(zoom+0.00025,1.08)':"
+                  "x='iw/2-(iw/zoom/2)':"
+                  "y='ih/2-(ih/zoom/2)':"
+                  "d=1:s=1920x1080:fps=30,"
+                  "fade=t=in:st=0:d=0.35,"
+                  f"fade=t=out:st={max(0,d-0.35)}:d=0.35,"
+                  "format=yuv420p"
+              )
+
+              run([
+                  "ffmpeg",
+                  "-y",
+                  "-loop", "1",
+                  "-i", str(image),
+                  "-i", str(audio),
+                  "-t", f"{d:.3f}",
+                  "-vf", vf,
+                  "-af",
+                  "loudnorm=I=-14:TP=-1.5:LRA=11",
+                  "-c:v", "libx264",
+                  "-preset", "veryfast",
+                  "-crf", "21",
+                  "-c:a", "aac",
+                  "-b:a", "192k",
+                  "-shortest",
+                  str(video)
+              ])
+
+              long_scene_files.append(video)
+              long_scene_durations.append(d)
+
+          # ==========================================================
+          # CONCAT LONG VIDEO
+          # ==========================================================
+
+          concat_file = WORK / "long_concat.txt"
+
+          with open(concat_file, "w") as f:
+              for video in long_scene_files:
+                  f.write(
+                      "file '"
+                      + str(video.resolve())
+                      + "'\n"
+                  )
+
+          long_raw = WORK / "long_raw.mp4"
+
+          run([
+              "ffmpeg",
+              "-y",
+              "-f", "concat",
+              "-safe", "0",
+              "-i", str(concat_file),
+              "-c", "copy",
+              str(long_raw)
+          ])
+
+          # ==========================================================
+          # CREATE CAPTIONS
+          # ==========================================================
+
+          def srt_time(seconds):
+
+              ms = int(round(seconds * 1000))
+
+              h = ms // 3600000
+              ms %= 3600000
+
+              m = ms // 60000
+              ms %= 60000
+
+              s = ms // 1000
+              ms %= 1000
+
+              return (
+                  f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+              )
+
+          srt = WORK / "captions.srt"
+
+          caption_index = 1
+          current = 0.0
+
+          with open(srt, "w", encoding="utf-8") as f:
+
+              for scene, scene_duration in zip(
+                  package["long_scenes"],
+                  long_scene_durations
+              ):
+
+                  words = clean_text(
+                      scene["narration"]
+                  ).split()
+
+                  chunk_size = 9
+
+                  chunks = [
+                      words[i:i + chunk_size]
+                      for i in range(
+                          0,
+                          len(words),
+                          chunk_size
+                      )
+                  ]
+
+                  total_words = max(
+                      len(words),
+                      1
+                  )
+
+                  for i, chunk in enumerate(chunks):
+
+                      start = current + (
+                          scene_duration
+                          * i
+                          / len(chunks)
+                      )
+
+                      end = current + (
+                          scene_duration
+                          * (i + 1)
+                          / len(chunks)
+                      )
+
+                      text = " ".join(chunk)
+
+                      f.write(
+                          f"{caption_index}\n"
+                      )
+                      f.write(
+                          f"{srt_time(start)} --> "
+                          f"{srt_time(end)}\n"
+                      )
+                      f.write(text + "\n\n")
+
+                      caption_index += 1
+
+                  current += scene_duration
+
+          # ==========================================================
+          # FINAL LONG VIDEO WITH CAPTIONS
+          # ==========================================================
+
+          long_final = WORK / "TechMind_Long_Final.mp4"
+
+          subtitle_filter = (
+              "subtitles="
+              + str(srt)
+              + ":force_style="
+              "'FontName=DejaVu Sans,"
+              "FontSize=20,"
+              "Bold=1,"
+              "Outline=2,"
+              "Shadow=1,"
+              "MarginV=55'"
           )
-          print("")
+
+          run([
+              "ffmpeg",
+              "-y",
+              "-i", str(long_raw),
+              "-vf", subtitle_filter,
+              "-c:v", "libx264",
+              "-preset", "veryfast",
+              "-crf", "20",
+              "-c:a", "aac",
+              "-b:a", "192k",
+              str(long_final)
+          ])
+
+          # ==========================================================
+          # SHORT AUDIO
+          # ==========================================================
+
+          short_script = " ".join(
+              clean_text(s["narration"])
+              for s in package["short_scenes"]
+          )
+
+          short_audio = WORK / "short.mp3"
+
+          tts(
+              short_script,
+              short_audio
+          )
+
+          short_audio_duration = duration(
+              short_audio
+          )
+
+          # ==========================================================
+          # CREATE SHORT SCENES
+          # ==========================================================
+
+          short_files = []
+          short_durations = []
+
+          for scene in package["short_scenes"]:
+
+              n = int(scene["scene_number"])
+
+              image = SHORT_SCENES / f"scene_{n:02d}.jpg"
+              audio = SHORT_SCENES / f"scene_{n:02d}.mp3"
+              video = SHORT_SCENES / f"scene_{n:02d}.mp4"
+
+              tts(
+                  scene["narration"],
+                  audio
+              )
+
+              d = duration(audio)
+
+              vf = (
+                  "scale=1080:1920:force_original_aspect_ratio=increase,"
+                  "crop=1080:1920,"
+                  "zoompan="
+                  "z='min(zoom+0.0004,1.07)':"
+                  "x='iw/2-(iw/zoom/2)':"
+                  "y='ih/2-(ih/zoom/2)':"
+                  "d=1:s=1080x1920:fps=30,"
+                  "fade=t=in:st=0:d=0.2,"
+                  f"fade=t=out:st={max(0,d-0.2)}:d=0.2,"
+                  "format=yuv420p"
+              )
+
+              run([
+                  "ffmpeg",
+                  "-y",
+                  "-loop", "1",
+                  "-i", str(image),
+                  "-i", str(audio),
+                  "-t", f"{d:.3f}",
+                  "-vf", vf,
+                  "-af",
+                  "loudnorm=I=-14:TP=-1.5:LRA=11",
+                  "-c:v", "libx264",
+                  "-preset", "veryfast",
+                  "-crf", "22",
+                  "-c:a", "aac",
+                  "-b:a", "160k",
+                  "-shortest",
+                  str(video)
+              ])
+
+              short_files.append(video)
+              short_durations.append(d)
+
+          short_concat = WORK / "short_concat.txt"
+
+          with open(short_concat, "w") as f:
+              for video in short_files:
+                  f.write(
+                      "file '"
+                      + str(video.resolve())
+                      + "'\n"
+                  )
+
+          short_raw = WORK / "short_raw.mp4"
+
+          run([
+              "ffmpeg",
+              "-y",
+              "-f", "concat",
+              "-safe", "0",
+              "-i", str(short_concat),
+              "-c", "copy",
+              str(short_raw)
+          ])
+
+          # ==========================================================
+          # SHORT CAPTIONS
+          # ==========================================================
+
+          short_srt = WORK / "short.srt"
+
+          idx = 1
+          current = 0.0
+
+          with open(
+              short_srt,
+              "w",
+              encoding="utf-8"
+          ) as f:
+
+              for scene, d in zip(
+                  package["short_scenes"],
+                  short_durations
+              ):
+
+                  words = clean_text(
+                      scene["narration"]
+                  ).split()
+
+                  chunks = [
+                      words[i:i+7]
+                      for i in range(
+                          0,
+                          len(words),
+                          7
+                      )
+                  ]
+
+                  for i, chunk in enumerate(chunks):
+
+                      start = current + (
+                          d * i / len(chunks)
+                      )
+
+                      end = current + (
+                          d * (i + 1) / len(chunks)
+                      )
+
+                      f.write(f"{idx}\n")
+                      f.write(
+                          f"{srt_time(start)} --> "
+                          f"{srt_time(end)}\n"
+                      )
+                      f.write(
+                          " ".join(chunk)
+                          + "\n\n"
+                      )
+
+                      idx += 1
+
+                  current += d
+
+          short_final = WORK / "TechMind_Short_Final.mp4"
+
+          short_subtitle_filter = (
+              "subtitles="
+              + str(short_srt)
+              + ":force_style="
+              "'FontName=DejaVu Sans,"
+              "FontSize=17,"
+              "Bold=1,"
+              "Outline=2,"
+              "Shadow=1,"
+              "MarginV=90'"
+          )
+
+          run([
+              "ffmpeg",
+              "-y",
+              "-i", str(short_raw),
+              "-vf", short_subtitle_filter,
+              "-c:v", "libx264",
+              "-preset", "veryfast",
+              "-crf", "21",
+              "-c:a", "aac",
+              "-b:a", "160k",
+              str(short_final)
+          ])
+
+          # ==========================================================
+          # AI THUMBNAIL BACKGROUND
+          # ==========================================================
+
+          thumb_bg = WORK / "thumbnail_bg.jpg"
+
+          thumb_prompt = f"""
+          Create a premium YouTube thumbnail background for this AI
+          technology video:
+
+          {package["title"]}
+
+          The image should be:
+          - 16:9
+          - cinematic
+          - extremely eye-catching
+          - realistic
+          - modern AI/technology visual
+          - strong subject on the RIGHT side
+          - darker clean space on the LEFT side for title text
+          - dramatic lighting
+          - high contrast
+          - professional creator thumbnail quality
+
+          Do NOT add any words or letters.
+          Do NOT add a watermark.
+          Do NOT use a generic office stock photo.
+          """
+
+          gemini_image(
+              thumb_prompt,
+              str(thumb_bg),
+              "16:9"
+          )
+
+          # ==========================================================
+          # ADD GUARANTEED THUMBNAIL TEXT
+          # ==========================================================
+
+          img = Image.open(
+              thumb_bg
+          ).convert("RGB")
+
+          img = img.resize(
+              (1280, 720)
+          )
+
+          # Dark gradient overlay on left
+          overlay = Image.new(
+              "RGBA",
+              img.size,
+              (0, 0, 0, 0)
+          )
+
+          od = ImageDraw.Draw(overlay)
+
+          for x in range(720):
+              alpha = int(
+                  190 * (1 - x / 720)
+              )
+
+              od.rectangle(
+                  [x, 0, x + 1, 720],
+                  fill=(0, 0, 0, alpha)
+              )
+
+          img = Image.alpha_composite(
+              img.convert("RGBA"),
+              overlay
+          ).convert("RGB")
+
+          draw = ImageDraw.Draw(img)
+
+          title = clean_text(
+              package["title"]
+          )
+
+          # Remove emoji from thumbnail text
+          title = re.sub(
+              r"[^\x00-\x7F]+",
+              "",
+              title
+          ).strip()
+
+          # Make thumbnail text shorter
+          words = title.split()
+
+          if len(words) > 7:
+              thumb_text = " ".join(words[:7])
+          else:
+              thumb_text = title
+
+          font = get_font(
+              62,
+              bold=True
+          )
+
+          lines = textwrap.wrap(
+              thumb_text,
+              width=18
+          )
+
+          y = 190
+
+          for line in lines[:3]:
+
+              draw.text(
+                  (55, y),
+                  line,
+                  font=font,
+                  fill="white",
+                  stroke_width=5,
+                  stroke_fill="black"
+              )
+
+              y += 78
+
+          # Small channel branding
+          brand_font = get_font(
+              28,
+              bold=True
+          )
+
+          draw.text(
+              (58, 625),
+              "TECHMIND",
+              font=brand_font,
+              fill="white",
+              stroke_width=2,
+              stroke_fill="black"
+          )
+
+          thumbnail = WORK / "thumbnail.jpg"
+
+          img.save(
+              thumbnail,
+              quality=95,
+              optimize=True
+          )
+
+          # ==========================================================
+          # SAVE METADATA
+          # ==========================================================
+
+          description = (
+              clean_text(package["description"])
+              + "\n\n"
+              + " ".join(
+                  str(x).strip()
+                  for x in package["hashtags"]
+              )
+          )
+
+          with open(
+              WORK / "metadata.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  {
+                      "title": package["title"],
+                      "description": description,
+                      "tags": package["tags"],
+                      "topic": package["topic"],
+                      "source_url": package.get(
+                          "source_url",
+                          ""
+                      )
+                  },
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+          # ==========================================================
+          # QUALITY CHECK
+          # ==========================================================
+
+          long_duration = duration(
+              long_final
+          )
+
+          short_duration = duration(
+              short_final
+          )
+
+          print("\n========================================")
+          print("QUALITY CHECK")
+          print("========================================")
           print(
-              "SHORT SCRIPT CHARACTERS:",
-              len(package["short_script"])
+              "Long duration:",
+              round(long_duration, 1),
+              "seconds"
+          )
+          print(
+              "Short duration:",
+              round(short_duration, 1),
+              "seconds"
+          )
+          print(
+              "Long scenes:",
+              len(long_scene_files)
+          )
+          print(
+              "Short scenes:",
+              len(short_files)
+          )
+
+          if long_duration < 210:
+              raise RuntimeError(
+                  "Long video is shorter than 3.5 minutes."
+              )
+
+          if long_duration > 360:
+              raise RuntimeError(
+                  "Long video is longer than 6 minutes."
+              )
+
+          if short_duration < 25:
+              raise RuntimeError(
+                  "Short is unexpectedly short."
+              )
+
+          if not long_final.exists():
+              raise RuntimeError(
+                  "Long video missing."
+              )
+
+          if not short_final.exists():
+              raise RuntimeError(
+                  "Short video missing."
+              )
+
+          if not thumbnail.exists():
+              raise RuntimeError(
+                  "Thumbnail missing."
+              )
+
+          print("QUALITY CHECK PASSED")
+          print("========================================")
+
+          # ==========================================================
+          # YOUTUBE UPLOAD
+          # ==========================================================
+
+          from google.oauth2.credentials import Credentials
+          from google.auth.transport.requests import Request
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          SCOPES = [
+              "https://www.googleapis.com/auth/youtube.upload"
+          ]
+
+          token_info = json.loads(
+              YOUTUBE_TOKEN_JSON
+          )
+
+          credentials = Credentials.from_authorized_user_info(
+              token_info,
+              SCOPES
+          )
+
+          if credentials.expired and credentials.refresh_token:
+
+              print("Refreshing YouTube OAuth token...")
+
+              credentials.refresh(
+                  Request()
+              )
+
+          if not credentials.valid:
+              raise RuntimeError(
+                  "YouTube credentials are invalid."
+              )
+
+          youtube = build(
+              "youtube",
+              "v3",
+              credentials=credentials
+          )
+
+          # ==========================================================
+          # UPLOAD LONG VIDEO
+          # ==========================================================
+
+          metadata = json.loads(
+              (WORK / "metadata.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          body = {
+              "snippet": {
+                  "title": metadata["title"],
+                  "description": metadata["description"],
+                  "tags": metadata["tags"],
+                  "categoryId": "28"
+              },
+              "status": {
+                  "privacyStatus": "public",
+                  "selfDeclaredMadeForKids": False
+              }
+          }
+
+          print("\nUploading LONG video...")
+
+          request = youtube.videos().insert(
+              part="snippet,status",
+              body=body,
+              media_body=MediaFileUpload(
+                  str(long_final),
+                  mimetype="video/mp4",
+                  resumable=True
+              )
+          )
+
+          response = None
+
+          while response is None:
+
+              status, response = request.next_chunk()
+
+              if status:
+                  print(
+                      "Long upload:",
+                      int(status.progress() * 100),
+                      "%"
+                  )
+
+          long_video_id = response["id"]
+
+          print(
+              "LONG VIDEO UPLOADED:",
+              long_video_id
+          )
+
+          # ==========================================================
+          # SET LONG THUMBNAIL
+          # ==========================================================
+
+          print("Uploading long thumbnail...")
+
+          youtube.thumbnails().set(
+              videoId=long_video_id,
+              media_body=MediaFileUpload(
+                  str(thumbnail),
+                  mimetype="image/jpeg"
+              )
+          ).execute()
+
+          print(
+              "LONG THUMBNAIL SET"
+          )
+
+          # ==========================================================
+          # SHORT METADATA
+          # ==========================================================
+
+          short_title = package["title"]
+
+          # Keep Shorts title reasonable
+          if len(short_title) > 80:
+              short_title = short_title[:77] + "..."
+
+          if "#Shorts" not in short_title:
+              short_title += " #Shorts"
+
+          short_description = (
+              "Quick AI update from TechMind.\n\n"
+              + " ".join(
+                  str(x).strip()
+                  for x in package["hashtags"]
+              )
+          )
+
+          short_body = {
+              "snippet": {
+                  "title": short_title,
+                  "description": short_description,
+                  "tags": metadata["tags"],
+                  "categoryId": "28"
+              },
+              "status": {
+                  "privacyStatus": "public",
+                  "selfDeclaredMadeForKids": False
+              }
+          }
+
+          # ==========================================================
+          # UPLOAD SHORT
+          # ==========================================================
+
+          print("\nUploading SHORT...")
+
+          short_request = youtube.videos().insert(
+              part="snippet,status",
+              body=short_body,
+              media_body=MediaFileUpload(
+                  str(short_final),
+                  mimetype="video/mp4",
+                  resumable=True
+              )
+          )
+
+          short_response = None
+
+          while short_response is None:
+
+              status, short_response = (
+                  short_request.next_chunk()
+              )
+
+              if status:
+                  print(
+                      "Short upload:",
+                      int(status.progress() * 100),
+                      "%"
+                  )
+
+          short_video_id = short_response["id"]
+
+          print(
+              "SHORT UPLOADED:",
+              short_video_id
+          )
+
+          # ==========================================================
+          # FINAL REPORT
+          # ==========================================================
+
+          print("\n")
+          print("========================================")
+          print("TECHMIND PRODUCTION COMPLETE")
+          print("========================================")
+          print("Topic:", package["topic"])
+          print("Title:", package["title"])
+          print(
+              "Long:",
+              "https://www.youtube.com/watch?v="
+              + long_video_id
+          )
+          print(
+              "Short:",
+              "https://www.youtube.com/shorts/"
+              + short_video_id
           )
           print("========================================")
+
           PY
+
+          python creator.py
+
+      # ============================================================
+      # 5. SAVE GENERATED FILES AS ACTION ARTIFACTS
+      # ============================================================
+      - name: Upload production files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: techmind-production
+          path: production/
+          retention-days: 7
