@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 
 # ============================================================
@@ -18,8 +18,8 @@ WIDTH = 3840
 HEIGHT = 2160
 FPS = 30
 
-MAX_DURATION = 230
-MIN_DURATION = 180
+MAX_DURATION = 230.0
+MIN_DURATION = 180.0
 
 MAX_VISUAL_DURATION = 15.0
 MIN_VISUAL_DURATION = 4.0
@@ -46,8 +46,10 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 # ============================================================
 
 def run(cmd):
+    cmd = [str(x) for x in cmd]
+
     print("\nRUNNING:")
-    print(" ".join(str(x) for x in cmd))
+    print(" ".join(cmd))
 
     result = subprocess.run(
         cmd,
@@ -60,8 +62,11 @@ def run(cmd):
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"Command failed with code {result.returncode}"
+            f"Command failed with code {result.returncode}: "
+            + " ".join(cmd)
         )
+
+    return result.stdout
 
 
 def probe_duration(path):
@@ -82,11 +87,15 @@ def probe_duration(path):
     )
 
     try:
-        return float(
-            result.stdout.strip()
-        )
+        value = float(result.stdout.strip())
+
+        if math.isfinite(value):
+            return value
+
     except Exception:
-        return 0.0
+        pass
+
+    return 0.0
 
 
 # ============================================================
@@ -148,10 +157,7 @@ if not script.strip():
         "No script found in content_package.json."
     )
 
-if not isinstance(
-    scenes,
-    list
-) or not scenes:
+if not isinstance(scenes, list) or not scenes:
     raise RuntimeError(
         "No scenes found in content_package.json."
     )
@@ -162,7 +168,7 @@ if not isinstance(
 # ============================================================
 
 def clean(text):
-    if not text:
+    if text is None:
         return ""
 
     text = str(text)
@@ -180,19 +186,13 @@ def words(text):
     return clean(text).split()
 
 
-def shorten(
-    text,
-    count=12
-):
+def shorten(text, count=12):
     parts = words(text)
 
     if len(parts) <= count:
         return " ".join(parts)
 
-    return (
-        " ".join(parts[:count])
-        + "..."
-    )
+    return " ".join(parts[:count]) + "..."
 
 
 def wrap_text(
@@ -201,7 +201,6 @@ def wrap_text(
     fnt,
     max_width
 ):
-
     text = clean(text)
 
     if not text:
@@ -226,25 +225,19 @@ def wrap_text(
             font=fnt
         )
 
-        width = (
-            box[2] - box[0]
-        )
+        width = box[2] - box[0]
 
         if width <= max_width:
             current = test
         else:
 
             if current:
-                lines.append(
-                    current
-                )
+                lines.append(current)
 
             current = token
 
     if current:
-        lines.append(
-            current
-        )
+        lines.append(current)
 
     return lines
 
@@ -253,10 +246,7 @@ def wrap_text(
 # FONTS
 # ============================================================
 
-def font(
-    size,
-    bold=False
-):
+def font(size, bold=False):
 
     path = (
         FONT_BOLD
@@ -294,7 +284,6 @@ def rounded_box(
     outline=None,
     width=1
 ):
-
     draw.rounded_rectangle(
         xy,
         radius=radius,
@@ -311,6 +300,10 @@ def center_text(
     fnt,
     fill=(245, 247, 255)
 ):
+    text = clean(text)
+
+    if not text:
+        return
 
     box = draw.textbbox(
         (0, 0),
@@ -351,7 +344,6 @@ def draw_grid(draw):
         WIDTH,
         160
     ):
-
         draw.line(
             [
                 (x, 0),
@@ -366,7 +358,6 @@ def draw_grid(draw):
         HEIGHT,
         160
     ):
-
         draw.line(
             [
                 (0, y),
@@ -400,6 +391,8 @@ def draw_top_bar(
     section
 ):
 
+    section = clean(section)
+
     rounded_box(
         draw,
         (
@@ -419,7 +412,7 @@ def draw_top_bar(
             130,
             100
         ),
-        clean(section).upper(),
+        section.upper(),
         font=FONT_BODY,
         fill=(235, 240, 250)
     )
@@ -452,10 +445,7 @@ def draw_progress(
 
     progress = max(
         0,
-        min(
-            1,
-            progress
-        )
+        min(1, progress)
     )
 
     x1 = 100
@@ -478,8 +468,7 @@ def draw_progress(
             x1,
             y,
             x1 + int(
-                (x2 - x1)
-                * progress
+                (x2 - x1) * progress
             ),
             y + 12
         ),
@@ -515,14 +504,14 @@ def draw_chip(
             x + 35,
             y + 24
         ),
-        text,
+        clean(text),
         font=FONT_SMALL,
         fill=(225, 235, 250)
     )
 
 
 # ============================================================
-# SCENE TYPE 1 — HOOK
+# SCENE 1 — HOOK
 # ============================================================
 
 def make_hook_frame():
@@ -600,7 +589,7 @@ def make_hook_frame():
 
 
 # ============================================================
-# SCENE TYPE 2 — BROWSER SEARCH
+# SCENE 2 — BROWSER SEARCH
 # ============================================================
 
 def make_browser_frame(
@@ -681,9 +670,7 @@ def make_browser_frame(
 
     y = 940
 
-    for i, item in enumerate(
-        results
-    ):
+    for i, item in enumerate(results):
 
         rounded_box(
             draw,
@@ -718,7 +705,7 @@ def make_browser_frame(
                 3220,
                 y + 55
             ),
-            f"{(87 - i * 11)}%",
+            f"{87 - i * 11}%",
             font=FONT_SMALL,
             fill=(110, 190, 255)
         )
@@ -731,12 +718,10 @@ def make_browser_frame(
 
 
 # ============================================================
-# SCENE TYPE 3 — WORKFLOW
+# SCENE 3 — WORKFLOW
 # ============================================================
 
-def make_workflow_frame(
-    scene
-):
+def make_workflow_frame(scene):
 
     img = base_canvas()
     draw = ImageDraw.Draw(img)
@@ -764,34 +749,20 @@ def make_workflow_frame(
         (180, 430),
         (1530, 430),
         (2880, 430),
-
         (180, 850),
         (1530, 850),
         (2880, 850),
-
         (850, 1270),
         (2200, 1270)
     ]
 
-    for i, (
-        label,
-        pos
-    ) in enumerate(
-        zip(
-            steps,
-            positions
-        )
+    for i, (label, pos) in enumerate(
+        zip(steps, positions)
     ):
 
         x, y = pos
 
-        active = (
-            i
-            == (
-                len(steps)
-                // 2
-            )
-        )
+        active = i == (len(steps) // 2)
 
         rounded_box(
             draw,
@@ -853,12 +824,10 @@ def make_workflow_frame(
 
 
 # ============================================================
-# SCENE TYPE 4 — AI TOOL CARDS
+# SCENE 4 — AI TOOL CARDS
 # ============================================================
 
-def make_tools_frame(
-    scene
-):
+def make_tools_frame(scene):
 
     img = base_canvas()
     draw = ImageDraw.Draw(img)
@@ -869,30 +838,12 @@ def make_tools_frame(
     )
 
     tools = [
-        (
-            "RESEARCH",
-            "Demand"
-        ),
-        (
-            "SCRIPT",
-            "Story"
-        ),
-        (
-            "VOICE",
-            "Narration"
-        ),
-        (
-            "VISUALS",
-            "Scenes"
-        ),
-        (
-            "EDIT",
-            "Motion"
-        ),
-        (
-            "UPLOAD",
-            "Publish"
-        )
+        ("RESEARCH", "Demand"),
+        ("SCRIPT", "Story"),
+        ("VOICE", "Narration"),
+        ("VISUALS", "Scenes"),
+        ("EDIT", "Motion"),
+        ("UPLOAD", "Publish")
     ]
 
     card_w = 1060
@@ -901,35 +852,19 @@ def make_tools_frame(
     start_x = 160
     start_y = 370
 
-    for i, (
-        name,
-        desc
-    ) in enumerate(
-        tools
-    ):
+    active_index = (
+        index_from_scene(scene) % 6
+    )
+
+    for i, (name, desc) in enumerate(tools):
 
         row = i // 3
         col = i % 3
 
-        x = (
-            start_x
-            + col * 1210
-        )
+        x = start_x + col * 1210
+        y = start_y + row * 600
 
-        y = (
-            start_y
-            + row * 600
-        )
-
-        active = (
-            i
-            == (
-                index_from_scene(
-                    scene
-                )
-                % 6
-            )
-        )
+        active = i == active_index
 
         rounded_box(
             draw,
@@ -986,9 +921,7 @@ def make_tools_frame(
     return img
 
 
-def index_from_scene(
-    scene
-):
+def index_from_scene(scene):
 
     try:
         return int(
@@ -1002,12 +935,10 @@ def index_from_scene(
 
 
 # ============================================================
-# SCENE TYPE 5 — DASHBOARD / ANALYTICS
+# SCENE 5 — DASHBOARD
 # ============================================================
 
-def make_dashboard_frame(
-    scene
-):
+def make_dashboard_frame(scene):
 
     img = base_canvas()
     draw = ImageDraw.Draw(img)
@@ -1018,21 +949,9 @@ def make_dashboard_frame(
     )
 
     cards = [
-        (
-            "VIEWS",
-            "128.4K",
-            310
-        ),
-        (
-            "WATCH TIME",
-            "7.8K",
-            1460
-        ),
-        (
-            "SUBSCRIBERS",
-            "+4.2K",
-            2610
-        )
+        ("VIEWS", "128.4K", 310),
+        ("WATCH TIME", "7.8K", 1460),
+        ("SUBSCRIBERS", "+4.2K", 2610)
     ]
 
     for label, value, x in cards:
@@ -1071,7 +990,6 @@ def make_dashboard_frame(
             fill=(240, 245, 252)
         )
 
-    # Chart
     left = 350
     right = 3500
     bottom = 1570
@@ -1107,9 +1025,7 @@ def make_dashboard_frame(
         (3450, 820)
     ]
 
-    for i in range(
-        len(points) - 1
-    ):
+    for i in range(len(points) - 1):
 
         draw.line(
             [
@@ -1148,12 +1064,10 @@ def make_dashboard_frame(
 
 
 # ============================================================
-# SCENE TYPE 6 — THUMBNAIL
+# SCENE 6 — THUMBNAIL
 # ============================================================
 
-def make_thumbnail_frame(
-    scene
-):
+def make_thumbnail_frame(scene):
 
     img = base_canvas()
     draw = ImageDraw.Draw(img)
@@ -1163,7 +1077,6 @@ def make_thumbnail_frame(
         "THUMBNAIL + TITLE"
     )
 
-    # Thumbnail
     x1 = 300
     y1 = 450
     x2 = 2350
@@ -1213,7 +1126,6 @@ def make_thumbnail_frame(
         fill=(245, 248, 255)
     )
 
-    # CTR card
     rounded_box(
         draw,
         (
@@ -1296,12 +1208,10 @@ def make_thumbnail_frame(
 
 
 # ============================================================
-# SCENE TYPE 7 — UPLOAD UI
+# SCENE 7 — YOUTUBE UPLOAD
 # ============================================================
 
-def make_upload_frame(
-    scene
-):
+def make_upload_frame(scene):
 
     img = base_canvas()
     draw = ImageDraw.Draw(img)
@@ -1325,6 +1235,23 @@ def make_upload_frame(
         width=4
     )
 
+    hashtags = package.get(
+        "hashtags",
+        [
+            "#AI",
+            "#YouTubeAutomation",
+            "#AITools"
+        ]
+    )
+
+    if isinstance(hashtags, list):
+        hashtag_text = "  ".join(
+            str(x)
+            for x in hashtags[:5]
+        )
+    else:
+        hashtag_text = str(hashtags)
+
     fields = [
         (
             "TITLE",
@@ -1344,7 +1271,7 @@ def make_upload_frame(
         ),
         (
             "HASHTAGS",
-            "#AI  #YouTubeAutomation  #AITools",
+            hashtag_text,
             980
         ),
         (
@@ -1385,7 +1312,7 @@ def make_upload_frame(
                 900,
                 y + 8
             ),
-            value,
+            shorten(value, 15),
             font=FONT_SMALL,
             fill=(225, 232, 242)
         )
@@ -1396,12 +1323,10 @@ def make_upload_frame(
 
 
 # ============================================================
-# SCENE TYPE 8 — AUTOMATION
+# SCENE 8 — AUTOMATION
 # ============================================================
 
-def make_automation_frame(
-    scene
-):
+def make_automation_frame(scene):
 
     img = base_canvas()
     draw = ImageDraw.Draw(img)
@@ -1412,40 +1337,14 @@ def make_automation_frame(
     )
 
     nodes = [
-        (
-            "AI TOPIC",
-            300,
-            650
-        ),
-        (
-            "SCRIPT",
-            1200,
-            650
-        ),
-        (
-            "VOICE",
-            2100,
-            650
-        ),
-        (
-            "VIDEO",
-            3000,
-            650
-        ),
-        (
-            "YOUTUBE",
-            1650,
-            1250
-        )
+        ("AI TOPIC", 300, 650),
+        ("SCRIPT", 1200, 650),
+        ("VOICE", 2100, 650),
+        ("VIDEO", 3000, 650),
+        ("YOUTUBE", 1650, 1250)
     ]
 
-    for i, (
-        label,
-        x,
-        y
-    ) in enumerate(
-        nodes
-    ):
+    for i, (label, x, y) in enumerate(nodes):
 
         rounded_box(
             draw,
@@ -1475,28 +1374,12 @@ def make_automation_frame(
             fill=(240, 245, 252)
         )
 
-    # Connections
     connections = [
-        (
-            (950, 765),
-            (1200, 765)
-        ),
-        (
-            (1850, 765),
-            (2100, 765)
-        ),
-        (
-            (2750, 765),
-            (3000, 765)
-        ),
-        (
-            (3325, 880),
-            (2300, 1250)
-        ),
-        (
-            (1530, 1250),
-            (625, 880)
-        )
+        ((950, 765), (1200, 765)),
+        ((1850, 765), (2100, 765)),
+        ((2750, 765), (3000, 765)),
+        ((3325, 880), (2300, 1250)),
+        ((1530, 1250), (625, 880))
     ]
 
     for start, end in connections:
@@ -1526,7 +1409,7 @@ def make_automation_frame(
 
 
 # ============================================================
-# SCENE TYPE 9 — CTA
+# SCENE 9 — CTA
 # ============================================================
 
 def make_cta_frame():
@@ -1542,21 +1425,9 @@ def make_cta_frame():
     )
 
     cards = [
-        (
-            "LIKE",
-            350,
-            (25, 48, 76)
-        ),
-        (
-            "SHARE",
-            1390,
-            (25, 48, 76)
-        ),
-        (
-            "SUBSCRIBE",
-            2430,
-            (185, 45, 58)
-        )
+        ("LIKE", 350, (25, 48, 76)),
+        ("SHARE", 1390, (25, 48, 76)),
+        ("SUBSCRIBE", 2430, (185, 45, 58))
     ]
 
     for label, x, fill in cards:
@@ -1645,8 +1516,7 @@ def make_generic_frame(
     center_text(
         draw,
         shorten(
-            on_screen
-            or "AI CREATOR WORKFLOW",
+            on_screen or "AI CREATOR WORKFLOW",
             8
         ),
         570,
@@ -1669,8 +1539,7 @@ def make_generic_frame(
 
     text_lines = wrap_text(
         draw,
-        animation
-        or scene.get(
+        animation or scene.get(
             "narration",
             ""
         ),
@@ -1726,48 +1595,32 @@ def make_scene_frame(
         "workflow" in visual_type
         or "diagram" in visual_type
     ):
-        return make_workflow_frame(
-            scene
-        )
+        return make_workflow_frame(scene)
 
     if (
         "tool" in visual_type
         or "comparison" in visual_type
     ):
-        return make_tools_frame(
-            scene
-        )
+        return make_tools_frame(scene)
 
     if (
         "dashboard" in visual_type
         or "analytics" in visual_type
         or "chart" in visual_type
     ):
-        return make_dashboard_frame(
-            scene
-        )
+        return make_dashboard_frame(scene)
 
-    if (
-        "thumbnail" in visual_type
-    ):
-        return make_thumbnail_frame(
-            scene
-        )
+    if "thumbnail" in visual_type:
+        return make_thumbnail_frame(scene)
 
     if (
         "youtube" in visual_type
         or "upload" in visual_type
     ):
-        return make_upload_frame(
-            scene
-        )
+        return make_upload_frame(scene)
 
-    if (
-        "automation" in visual_type
-    ):
-        return make_automation_frame(
-            scene
-        )
+    if "automation" in visual_type:
+        return make_automation_frame(scene)
 
     return make_generic_frame(
         scene,
@@ -1779,36 +1632,23 @@ def make_scene_frame(
 # CREATE FRAME SET
 # ============================================================
 
-print(
-    "\n=========================================="
-)
+print("\n==========================================")
+print("TECHMIND STUDIO")
+print("PREMIUM 4K TUTORIAL RENDERER")
+print("==========================================")
 
-print(
-    "TECHMIND STUDIO"
-)
-
-print(
-    "PREMIUM 4K TUTORIAL RENDERER"
-)
-
-print(
-    "=========================================="
-)
-
-hook_path = (
-    FRAMES_DIR
-    / "000_hook.png"
-)
+hook_path = FRAMES_DIR / "000_hook.png"
 
 make_hook_frame().save(
-    hook_path
+    hook_path,
+    "PNG"
 )
 
 scene_frames = []
 
-for index, scene in enumerate(
-    scenes[:9]
-):
+selected_scenes = scenes[:9]
+
+for index, scene in enumerate(selected_scenes):
 
     path = (
         FRAMES_DIR
@@ -1819,10 +1659,7 @@ for index, scene in enumerate(
         "Creating visual:",
         index + 1,
         "/",
-        min(
-            len(scenes),
-            9
-        )
+        len(selected_scenes)
     )
 
     frame = make_scene_frame(
@@ -1831,21 +1668,18 @@ for index, scene in enumerate(
     )
 
     frame.save(
-        path
+        path,
+        "PNG"
     )
 
-    scene_frames.append(
-        path
-    )
+    scene_frames.append(path)
 
 
-cta_path = (
-    FRAMES_DIR
-    / "999_cta.png"
-)
+cta_path = FRAMES_DIR / "999_cta.png"
 
 make_cta_frame().save(
-    cta_path
+    cta_path,
+    "PNG"
 )
 
 
@@ -1853,46 +1687,50 @@ make_cta_frame().save(
 # GENERATE VOICE
 # ============================================================
 
-print(
-    "\n=========================================="
-)
+print("\n==========================================")
+print("GENERATING NATURAL AI VOICE")
+print("==========================================")
 
-print(
-    "GENERATING NATURAL AI VOICE"
-)
-
-print(
-    "=========================================="
-)
+# IMPORTANT:
+# edge-tts requires the rate value to be passed as ONE argument.
+# Correct:
+#     --rate=-5%
+#
+# Incorrect:
+#     --rate -5%
+#
+# This fixes the exact error seen in GitHub Actions.
 
 run([
     "edge-tts",
     "--voice",
     "en-US-AriaNeural",
-    "--rate",
-    "-5%",
+    "--rate=-5%",
     "--text",
     script,
     "--write-media",
     str(VOICE_FILE)
 ])
 
+
+if not VOICE_FILE.exists():
+    raise RuntimeError(
+        "edge-tts finished but narration.mp3 was not created."
+    )
+
+
 audio_duration = probe_duration(
     VOICE_FILE
 )
 
 if audio_duration <= 0:
-
     raise RuntimeError(
         "Narration duration could not be detected."
     )
 
 print(
     "Narration duration:",
-    round(
-        audio_duration,
-        2
-    ),
+    round(audio_duration, 2),
     "seconds"
 )
 
@@ -1900,6 +1738,12 @@ print(
 # ============================================================
 # TARGET DURATION
 # ============================================================
+
+# Keep the generated long video between
+# approximately 3:00 and 3:50.
+#
+# The actual narration duration remains the source of truth.
+# We never artificially stretch a short narration to 4+ minutes.
 
 target_duration = max(
     MIN_DURATION,
@@ -1911,10 +1755,7 @@ target_duration = max(
 
 print(
     "Target video duration:",
-    round(
-        target_duration,
-        2
-    ),
+    round(target_duration, 2),
     "seconds"
 )
 
@@ -1925,7 +1766,6 @@ print(
 
 timeline = []
 
-# Hook
 hook_duration = min(
     8.0,
     target_duration
@@ -1939,21 +1779,16 @@ timeline.append(
     )
 )
 
-remaining = (
-    target_duration
-    - hook_duration
-)
+remaining = target_duration - hook_duration
 
 
-# ------------------------------------------------------------
-# Estimate scene durations from narration word count
-# ------------------------------------------------------------
-
-valid_scenes = scenes[:len(scene_frames)]
+# ============================================================
+# ESTIMATE SCENE DURATIONS
+# ============================================================
 
 estimated_scene_durations = []
 
-for scene in valid_scenes:
+for scene in selected_scenes:
 
     narration = clean(
         scene.get(
@@ -1964,15 +1799,11 @@ for scene in valid_scenes:
 
     count = max(
         1,
-        len(
-            words(narration)
-        )
+        len(words(narration))
     )
 
-    estimated = (
-        count
-        / 2.45
-    )
+    # Approximately 2.45 words/sec.
+    estimated = count / 2.45
 
     estimated = max(
         MIN_VISUAL_DURATION,
@@ -1992,19 +1823,18 @@ total_estimated = sum(
 )
 
 if total_estimated <= 0:
-
     total_estimated = (
-        len(scene_frames)
-        * 10
+        len(scene_frames) * 10
     )
 
 
-# Scale durations to remaining time
-scale = (
-    remaining
-    / total_estimated
-)
+# ============================================================
+# SCALE SCENES TO AVAILABLE TIME
+# ============================================================
 
+scale = (
+    remaining / total_estimated
+)
 
 for index, frame_path in enumerate(
     scene_frames
@@ -2042,19 +1872,22 @@ for index, frame_path in enumerate(
     remaining -= duration
 
 
-# ------------------------------------------------------------
-# If time remains, distribute small additional visual segments
-# ------------------------------------------------------------
+# ============================================================
+# FILL REMAINING TIME WITHOUT EXCESSIVE REPETITION
+# ============================================================
 
-if remaining > 0.5:
+if remaining > 0.5 and scene_frames:
+
+    # Add frames in a controlled cycle.
+    # This is only a fallback when the narration is longer
+    # than the first timeline estimate.
 
     index = 0
 
     while remaining > 0.5:
 
         frame_path = scene_frames[
-            index
-            % len(scene_frames)
+            index % len(scene_frames)
         ]
 
         duration = min(
@@ -2066,7 +1899,7 @@ if remaining > 0.5:
             (
                 frame_path,
                 duration,
-                "scene_repeat"
+                "scene_extension"
             )
         )
 
@@ -2074,9 +1907,9 @@ if remaining > 0.5:
         index += 1
 
 
-# ------------------------------------------------------------
+# ============================================================
 # CTA
-# ------------------------------------------------------------
+# ============================================================
 
 if target_duration >= 190:
 
@@ -2087,13 +1920,6 @@ if target_duration >= 190:
 
     if cta_duration >= 3:
 
-        # Trim timeline from the end
-        # so CTA stays inside target duration.
-        current_total = sum(
-            item[1]
-            for item in timeline
-        )
-
         allowed_before_cta = (
             target_duration
             - cta_duration
@@ -2101,7 +1927,7 @@ if target_duration >= 190:
 
         new_timeline = []
 
-        used = 0
+        used = 0.0
 
         for item in timeline:
 
@@ -2112,6 +1938,9 @@ if target_duration >= 190:
                 item[1],
                 allowed_before_cta - used
             )
+
+            if duration <= 0:
+                continue
 
             new_timeline.append(
                 (
@@ -2140,7 +1969,7 @@ if target_duration >= 190:
 
 final_timeline = []
 
-total = 0
+total = 0.0
 
 for image_path, duration, kind in timeline:
 
@@ -2169,43 +1998,59 @@ for image_path, duration, kind in timeline:
 timeline = final_timeline
 
 
-print(
-    "\n=========================================="
-)
+# ============================================================
+# TIMELINE REPORT
+# ============================================================
 
-print(
-    "VISUAL TIMELINE"
-)
+print("\n==========================================")
+print("VISUAL TIMELINE")
+print("==========================================")
 
-print(
-    "=========================================="
-)
-
-for i, (
-    path,
-    duration,
-    kind
-) in enumerate(
+for i, (path, duration, kind) in enumerate(
     timeline
 ):
 
     print(
         f"{i + 1:02d}. "
-        f"{kind:<15} "
-        f"{duration:.2f}s"
+        f"{kind:<18} "
+        f"{duration:.2f}s  "
+        f"{path.name}"
     )
+
+timeline_total = sum(
+    item[1]
+    for item in timeline
+)
 
 print(
     "Total:",
     round(
-        sum(
-            x[1]
-            for x in timeline
-        ),
+        timeline_total,
         2
     ),
     "seconds"
 )
+
+
+if timeline:
+    max_visual = max(
+        item[1]
+        for item in timeline
+    )
+
+    print(
+        "Maximum visual:",
+        round(
+            max_visual,
+            2
+        ),
+        "seconds"
+    )
+
+    if max_visual > MAX_VISUAL_DURATION + 0.1:
+        raise RuntimeError(
+            "Visual segment exceeded maximum duration."
+        )
 
 
 # ============================================================
@@ -2219,35 +2064,43 @@ def render_segment(
     index
 ):
 
-    # Very subtle controlled movement.
-    # No aggressive shaking.
-    if index % 3 == 0:
-
-        zoom_start = 1.000
-        zoom_end = 1.008
-
-    elif index % 3 == 1:
-
-        zoom_start = 1.006
-        zoom_end = 1.000
-
-    else:
-
-        zoom_start = 1.000
-        zoom_end = 1.005
+    duration = float(duration)
 
     frames = max(
         1,
         int(
-            duration
-            * FPS
+            math.ceil(
+                duration * FPS
+            )
         )
     )
 
-    step = (
-        zoom_end
-        - zoom_start
-    ) / frames
+    # Extremely subtle movement.
+    # This keeps the frame alive without the old
+    # aggressive shaking / zoom feeling.
+
+    if index % 4 == 0:
+        zoom_start = 1.000
+        zoom_end = 1.006
+
+    elif index % 4 == 1:
+        zoom_start = 1.004
+        zoom_end = 1.000
+
+    elif index % 4 == 2:
+        zoom_start = 1.000
+        zoom_end = 1.004
+
+    else:
+        zoom_start = 1.003
+        zoom_end = 1.001
+
+    zoom_step = (
+        zoom_end - zoom_start
+    ) / max(
+        frames,
+        1
+    )
 
     vf = (
         f"scale={WIDTH}:{HEIGHT}:"
@@ -2256,7 +2109,7 @@ def render_segment(
         f"zoompan="
         f"z='"
         f"{zoom_start}+"
-        f"{step}*on':"
+        f"{zoom_step}*on':"
         f"d=1:"
         f"s={WIDTH}x{HEIGHT}:"
         f"fps={FPS},"
@@ -2271,7 +2124,7 @@ def render_segment(
         "-i",
         str(image_path),
         "-t",
-        str(duration),
+        f"{duration:.3f}",
         "-vf",
         vf,
         "-an",
@@ -2283,6 +2136,8 @@ def render_segment(
         "18",
         "-pix_fmt",
         "yuv420p",
+        "-movflags",
+        "+faststart",
         str(output_path)
     ])
 
@@ -2293,9 +2148,7 @@ for index, (
     image_path,
     duration,
     kind
-) in enumerate(
-    timeline
-):
+) in enumerate(timeline):
 
     output = (
         SEGMENTS_DIR
@@ -2316,13 +2169,24 @@ for index, (
         index
     )
 
+    if not output.exists():
+        raise RuntimeError(
+            f"Segment was not created: {output}"
+        )
+
     segment_files.append(
         output
     )
 
 
+if not segment_files:
+    raise RuntimeError(
+        "No video segments were rendered."
+    )
+
+
 # ============================================================
-# CONCAT
+# CONCAT FILE
 # ============================================================
 
 with open(
@@ -2337,6 +2201,7 @@ with open(
             file.resolve()
         )
 
+        # FFmpeg concat format uses single quotes.
         absolute = absolute.replace(
             "'",
             "'\\''"
@@ -2347,17 +2212,13 @@ with open(
         )
 
 
-print(
-    "\n=========================================="
-)
+# ============================================================
+# JOIN VISUAL SEGMENTS
+# ============================================================
 
-print(
-    "JOINING VISUAL SEGMENTS"
-)
-
-print(
-    "=========================================="
-)
+print("\n==========================================")
+print("JOINING VISUAL SEGMENTS")
+print("==========================================")
 
 run([
     "ffmpeg",
@@ -2375,26 +2236,54 @@ run([
 ])
 
 
+if not VISUAL_VIDEO.exists():
+    raise RuntimeError(
+        "Visual video was not created."
+    )
+
+
+visual_duration = probe_duration(
+    VISUAL_VIDEO
+)
+
+print(
+    "Visual video duration:",
+    round(
+        visual_duration,
+        2
+    ),
+    "seconds"
+)
+
+
 # ============================================================
 # COMBINE VIDEO + VOICE
 # ============================================================
 
-print(
-    "\n=========================================="
-)
+print("\n==========================================")
+print("COMBINING VIDEO + VOICE")
+print("==========================================")
 
-print(
-    "COMBINING VIDEO + VOICE"
-)
-
-print(
-    "=========================================="
-)
+# The shorter of:
+# 1. visual duration
+# 2. narration duration
+# 3. maximum allowed duration
+#
+# prevents accidental silent tail / missing audio.
 
 final_duration = min(
-    target_duration,
+    visual_duration,
+    audio_duration,
     MAX_DURATION
 )
+
+if final_duration < MIN_DURATION:
+    print(
+        "WARNING: Final duration is below preferred "
+        f"{MIN_DURATION}s because the generated narration "
+        "is shorter than the minimum target."
+    )
+
 
 run([
     "ffmpeg",
@@ -2408,13 +2297,15 @@ run([
     "-map",
     "1:a:0",
     "-t",
-    str(final_duration),
+    f"{final_duration:.3f}",
     "-c:v",
     "copy",
     "-c:a",
     "aac",
     "-b:a",
     "192k",
+    "-ar",
+    "48000",
     "-movflags",
     "+faststart",
     str(OUTPUT_FILE)
@@ -2422,31 +2313,76 @@ run([
 
 
 # ============================================================
-# VALIDATION
+# FINAL VALIDATION
 # ============================================================
 
 if not OUTPUT_FILE.exists():
-
     raise RuntimeError(
         "Final MP4 was not created."
     )
+
 
 output_duration = probe_duration(
     OUTPUT_FILE
 )
 
+if output_duration <= 0:
+    raise RuntimeError(
+        "Final video duration could not be detected."
+    )
 
-print(
-    "\n=========================================="
+
+# Check final video streams.
+probe_streams = subprocess.run(
+    [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "json",
+        str(OUTPUT_FILE)
+    ],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True
 )
 
-print(
-    "FINAL VIDEO"
-)
+try:
+    stream_data = json.loads(
+        probe_streams.stdout
+    )
 
-print(
-    "=========================================="
-)
+    video_stream = (
+        stream_data
+        .get("streams", [{}])[0]
+    )
+
+    output_width = int(
+        video_stream.get(
+            "width",
+            0
+        )
+    )
+
+    output_height = int(
+        video_stream.get(
+            "height",
+            0
+        )
+    )
+
+except Exception:
+    output_width = 0
+    output_height = 0
+
+
+print("\n==========================================")
+print("FINAL VIDEO")
+print("==========================================")
 
 print(
     "Title:",
@@ -2455,7 +2391,7 @@ print(
 
 print(
     "Resolution:",
-    "3840x2160"
+    f"{output_width}x{output_height}"
 )
 
 print(
@@ -2472,31 +2408,45 @@ print(
     len(timeline)
 )
 
-print(
-    "Maximum visual:",
-    round(
-        max(
-            x[1]
-            for x in timeline
+if timeline:
+    print(
+        "Maximum visual:",
+        round(
+            max(
+                item[1]
+                for item in timeline
+            ),
+            2
         ),
-        2
-    ),
-    "seconds"
-)
+        "seconds"
+    )
 
 print(
     "Output:",
     OUTPUT_FILE
 )
 
-print(
-    "=========================================="
-)
+print("==========================================")
+print("TECHMIND STUDIO VIDEO READY")
+print("==========================================")
+
+
+# ============================================================
+# HARD VALIDATION
+# ============================================================
+
+if output_width != WIDTH or output_height != HEIGHT:
+
+    raise RuntimeError(
+        "Final video is not 3840x2160."
+    )
+
+if output_duration > MAX_DURATION + 1:
+
+    raise RuntimeError(
+        "Final video exceeds maximum allowed duration."
+    )
 
 print(
-    "TECHMIND STUDIO VIDEO READY"
-)
-
-print(
-    "=========================================="
+    "\nFINAL VALIDATION: PASSED"
 )
