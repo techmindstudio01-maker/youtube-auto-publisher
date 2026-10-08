@@ -39,3 +39,9 @@ jobs:
           YOUTUBE_PRIVACY: public
         run: |
           python creator.py
+                - name: Save Content Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-content-package
+          path: content_package.json
+          retention-days: 7
