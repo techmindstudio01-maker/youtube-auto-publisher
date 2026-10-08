@@ -89,6 +89,8 @@ jobs:
           print("Title:", data.get("title"))
           print("Script words:", data.get("script_word_count"))
           print("Scenes:", len(data.get("scenes", [])))
+          print("Hashtags:", data.get("hashtags"))
+          print("Tags:", data.get("tags"))
           print("==========================================")
           PY
 
@@ -118,7 +120,43 @@ jobs:
             techmind_studio_long.mp4
 
       # ==========================================
-      # 9. Save Content Package
+      # 9. Generate Professional Thumbnail
+      # ==========================================
+      - name: Generate Thumbnail
+        run: |
+          python thumbnail_generator.py
+
+      # ==========================================
+      # 10. Verify Thumbnail
+      # ==========================================
+      - name: Verify Thumbnail
+        run: |
+          if [ ! -f "techmind_studio_thumbnail.png" ]; then
+            echo "ERROR: Thumbnail was not created."
+            exit 1
+          fi
+
+          echo "Thumbnail created successfully."
+
+          python - <<'PY'
+          from PIL import Image
+
+          image = Image.open("techmind_studio_thumbnail.png")
+
+          print("==========================================")
+          print("Thumbnail verified.")
+          print("Format:", image.format)
+          print("Size:", image.size)
+          print("==========================================")
+
+          if image.size != (1280, 720):
+              raise SystemExit(
+                  "ERROR: Thumbnail must be 1280x720."
+              )
+          PY
+
+      # ==========================================
+      # 11. Save Content Package
       # ==========================================
       - name: Save Content Package
         uses: actions/upload-artifact@v4
@@ -128,7 +166,7 @@ jobs:
           retention-days: 7
 
       # ==========================================
-      # 10. Save Generated Long Video
+      # 12. Save Long Video
       # ==========================================
       - name: Save Long Video
         uses: actions/upload-artifact@v4
@@ -138,7 +176,17 @@ jobs:
           retention-days: 7
 
       # ==========================================
-      # 11. Save Automation State
+      # 13. Save Thumbnail
+      # ==========================================
+      - name: Save Thumbnail
+        uses: actions/upload-artifact@v4
+        with:
+          name: techmind-studio-thumbnail
+          path: techmind_studio_thumbnail.png
+          retention-days: 7
+
+      # ==========================================
+      # 14. Save Automation State
       # ==========================================
       - name: Save Automation State
         run: |
