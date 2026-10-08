@@ -2,113 +2,83 @@ import os
 import json
 import re
 import time
-import random
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
-
 # ============================================================
-# TechMind Studio - AI Automation Engine
-# ============================================================
-
-print("=" * 60)
-print("TechMind Studio - Automation Engine")
-print("=" * 60)
-
-
-# ============================================================
-# CONFIG
+# TechMind Studio - AI Content Creator
+# TARGET: 3:15 - 3:45 LONG VIDEO
 # ============================================================
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Primary + fallback models
+CONTENT_FILE = "content_package.json"
+STATE_FILE = "automation_state.json"
+
+TARGET_MIN_WORDS = 480
+TARGET_MAX_WORDS = 530
+TARGET_SCENES = 9
+
 MODELS = [
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.5-flash-lite",
 ]
 
-OUTPUT_FILE = "content_package.json"
-STATE_FILE = "automation_state.json"
+NEWS_URL = (
+    "https://news.google.com/rss/search"
+    "?q=AI%20technology%20artificial%20intelligence"
+    "&hl=en-IN&gl=IN&ceid=IN:en"
+)
 
-MAX_MODEL_ATTEMPTS = 3
-
-
-# ============================================================
-# STATE
-# ============================================================
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
+    if not os.path.exists(STATE_FILE):
+        return {"used_topics": []}
 
-            if not isinstance(state, dict):
-                raise ValueError("Invalid state format")
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-            state.setdefault("generated_topics", [])
-            state.setdefault("generated_titles", [])
-            state.setdefault("last_run", None)
-            state.setdefault("run_count", 0)
+        if not isinstance(data, dict):
+            return {"used_topics": []}
 
-            return state
+        data.setdefault("used_topics", [])
+        return data
 
-        except Exception as e:
-            print(f"Warning: Could not load state: {e}")
-
-    return {
-        "generated_topics": [],
-        "generated_titles": [],
-        "last_run": None,
-        "run_count": 0,
-    }
+    except Exception:
+        return {"used_topics": []}
 
 
 def save_state(state):
-    temp_file = STATE_FILE + ".tmp"
-
-    with open(temp_file, "w", encoding="utf-8") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
-    os.replace(temp_file, STATE_FILE)
+
+def clean_text(text):
+    if not text:
+        return ""
+
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
-# ============================================================
-# NEWS
-# ============================================================
-
-def get_news():
+def fetch_ai_news():
     print("Fetching fresh AI news...")
-
-    rss_url = (
-        "https://news.google.com/rss/search?"
-        "q=AI%20OR%20artificial%20intelligence%20OR%20technology"
-        "&hl=en-US&gl=US&ceid=US:en"
-    )
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        )
-    }
 
     try:
         response = requests.get(
-            rss_url,
-            headers=headers,
-            timeout=30
+            NEWS_URL,
+            timeout=30,
+            headers={
+                "User-Agent": "TechMindStudio-Automation/1.0"
+            },
         )
 
         response.raise_for_status()
 
-        root = ET.fromstring(response.content)
+        root = ET.fromstring(response.text)
 
         headlines = []
 
@@ -116,437 +86,476 @@ def get_news():
             title = item.findtext("title")
 
             if title:
-                title = title.strip()
+                title = clean_text(title)
 
                 if title and title not in headlines:
                     headlines.append(title)
 
-            if len(headlines) >= 20:
-                break
-
         print(f"Found {len(headlines)} headlines.")
 
-        return headlines
+        return headlines[:20]
 
     except Exception as e:
-        print(f"News fetch failed: {e}")
-
-        return [
-            "Artificial intelligence continues to transform software and business",
-            "AI assistants are becoming more capable",
-            "Companies are rapidly adopting generative AI",
-            "AI automation is changing online work",
-            "New AI tools are launching across technology",
-        ]
+        print("News fetch failed:", e)
+        return []
 
 
-# ============================================================
-# JSON CLEANER
-# ============================================================
-
-def clean_json(text):
-    text = text.strip()
-
-    # Remove markdown code fences
-    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"^```\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-
-    # Find JSON object if model added extra text
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start != -1 and end != -1 and end > start:
-        text = text[start:end + 1]
-
-    return text.strip()
-
-
-# ============================================================
-# GEMINI REQUEST
-# ============================================================
-
-def call_gemini(model, prompt):
-    url = (
-        "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{model}:generateContent"
-    )
-
-    params = {
-        "key": GEMINI_API_KEY
-    }
-
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.8,
-            "maxOutputTokens": 4000,
-            "responseMimeType": "application/json"
-        }
-    }
-
-    response = requests.post(
-        url,
-        params=params,
-        json=payload,
-        timeout=90
-    )
-
-    if response.status_code != 200:
-        print(
-            f"Gemini HTTP error: {response.status_code} "
-            f"using {model}"
-        )
-
-        try:
-            error_data = response.json()
-            print(
-                "Gemini error:",
-                json.dumps(error_data, ensure_ascii=False)[:1000]
-            )
-        except Exception:
-            print(response.text[:1000])
-
-        return None
-
-    data = response.json()
-
-    try:
-        candidates = data.get("candidates", [])
-
-        if not candidates:
-            print("Gemini returned no candidates.")
-            return None
-
-        parts = candidates[0].get("content", {}).get("parts", [])
-
-        text_parts = []
-
-        for part in parts:
-            if "text" in part:
-                text_parts.append(part["text"])
-
-        result = "".join(text_parts).strip()
-
-        if not result:
-            print("Gemini returned empty text.")
-            return None
-
-        return result
-
-    except Exception as e:
-        print(f"Could not parse Gemini response: {e}")
-        return None
-
-
-# ============================================================
-# CONTENT GENERATION
-# ============================================================
-
-def generate_content(headlines, state):
-
-    print("Generating a NEW topic...")
-
-    previous_topics = state.get("generated_topics", [])
-    previous_titles = state.get("generated_titles", [])
-
-    headlines_text = "\n".join(
-        f"- {headline}"
-        for headline in headlines
-    )
-
-    previous_topics_text = "\n".join(
-        f"- {topic}"
-        for topic in previous_topics[-30:]
-    )
-
-    previous_titles_text = "\n".join(
-        f"- {title}"
-        for title in previous_titles[-30:]
-    )
-
-    prompt = f"""
-You are the senior content strategist for a YouTube channel called
-"TechMind Studio".
-
-Create ONE completely fresh YouTube video idea based on current AI
-and technology news.
-
-The content must be suitable for an original 4-5 minute YouTube video.
-
-IMPORTANT:
-- Do NOT copy any article.
-- Do NOT create a generic topic.
-- Pick a specific, interesting AI/technology angle.
-- Make the topic attractive for viewers.
-- The title should have a strong curiosity hook.
-- Add 1-2 relevant emojis to the title.
-- The title must NOT be identical or nearly identical to previous titles.
-- The topic must NOT repeat previous topics.
-- Description should be useful and YouTube-ready.
-- Include relevant hashtags.
-- Include YouTube search tags.
-- Create a strong opening hook.
-- Create a short URL-safe slug.
-- Return ONLY valid JSON.
-- No markdown.
-- No explanation outside JSON.
-
-CURRENT NEWS HEADLINES:
-{headlines_text}
-
-PREVIOUS TOPICS:
-{previous_topics_text}
-
-PREVIOUS TITLES:
-{previous_titles_text}
-
-Return exactly this structure:
-
-{{
-  "topic": "specific video topic",
-  "title": "attention-grabbing YouTube title with relevant emoji",
-  "description": "YouTube-ready description",
-  "hashtags": [
-    "#AI",
-    "#ArtificialIntelligence",
-    "#Technology"
-  ],
-  "tags": [
-    "AI",
-    "artificial intelligence",
-    "AI tools",
-    "technology"
-  ],
-  "hook": "strong first 10-15 second hook",
-  "slug": "short-url-safe-slug"
-}}
-"""
-
-    # --------------------------------------------------------
-    # Try every model with exponential backoff
-    # --------------------------------------------------------
+def call_gemini(prompt):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is missing.")
 
     for model in MODELS:
-
-        print()
         print(f"Trying Gemini model: {model}")
 
-        for attempt in range(1, MAX_MODEL_ATTEMPTS + 1):
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/"
+            f"models/{model}:generateContent"
+            f"?key={GEMINI_API_KEY}"
+        )
 
-            print(
-                f"Attempt {attempt}/{MAX_MODEL_ATTEMPTS} "
-                f"using {model}..."
-            )
-
-            result = call_gemini(
-                model=model,
-                prompt=prompt
-            )
-
-            if result:
-
-                try:
-                    package = json.loads(
-                        clean_json(result)
-                    )
-
-                    required_fields = [
-                        "topic",
-                        "title",
-                        "description",
-                        "hashtags",
-                        "tags",
-                        "hook",
-                        "slug",
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": prompt
+                        }
                     ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.85,
+                "maxOutputTokens": 9000
+            }
+        }
 
-                    missing = [
-                        field
-                        for field in required_fields
-                        if field not in package
-                    ]
-
-                    if missing:
-                        print(
-                            "Gemini JSON missing fields:",
-                            missing
-                        )
-                    else:
-
-                        topic = str(
-                            package["topic"]
-                        ).strip()
-
-                        title = str(
-                            package["title"]
-                        ).strip()
-
-                        # Duplicate protection
-                        duplicate_topic = any(
-                            topic.lower() == str(old).lower()
-                            for old in previous_topics
-                        )
-
-                        duplicate_title = any(
-                            title.lower() == str(old).lower()
-                            for old in previous_titles
-                        )
-
-                        if duplicate_topic:
-                            print(
-                                "Duplicate topic detected. "
-                                "Requesting another idea."
-                            )
-                            prompt += (
-                                "\nIMPORTANT: Your previous answer "
-                                "was a duplicate. Generate a "
-                                "completely different topic."
-                            )
-                            continue
-
-                        if duplicate_title:
-                            print(
-                                "Duplicate title detected. "
-                                "Requesting another title."
-                            )
-                            prompt += (
-                                "\nIMPORTANT: Your previous answer "
-                                "used a duplicate title. Generate "
-                                "a completely different title."
-                            )
-                            continue
-
-                        # Ensure lists
-                        if not isinstance(
-                            package["hashtags"],
-                            list
-                        ):
-                            package["hashtags"] = []
-
-                        if not isinstance(
-                            package["tags"],
-                            list
-                        ):
-                            package["tags"] = []
-
-                        print()
-                        print("CONTENT GENERATED SUCCESSFULLY")
-                        print("--------------------------------")
-                        print("Topic:", topic)
-                        print("Title:", title)
-                        print("Hook:", package["hook"])
-                        print(
-                            "Hashtags:",
-                            ", ".join(
-                                map(
-                                    str,
-                                    package["hashtags"]
-                                )
-                            )
-                        )
-                        print(
-                            "Tags:",
-                            ", ".join(
-                                map(
-                                    str,
-                                    package["tags"]
-                                )
-                            )
-                        )
-
-                        return package
-
-                except json.JSONDecodeError as e:
-                    print(
-                        "Invalid JSON returned by Gemini:",
-                        e
-                    )
-
-            # ------------------------------------------------
-            # Exponential backoff
-            # ------------------------------------------------
-
-            if attempt < MAX_MODEL_ATTEMPTS:
-
-                wait_seconds = min(
-                    60,
-                    (2 ** (attempt - 1)) * 5
-                    + random.uniform(0, 3)
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    timeout=120
                 )
 
                 print(
-                    f"Waiting {wait_seconds:.1f}s "
-                    "before retry..."
+                    f"Gemini HTTP {response.status_code} "
+                    f"(attempt {attempt}/3)"
                 )
 
-                time.sleep(wait_seconds)
+                if response.status_code == 200:
+                    data = response.json()
 
-        print()
-        print(
-            f"Model {model} failed after "
-            f"{MAX_MODEL_ATTEMPTS} attempts."
-        )
+                    candidates = data.get("candidates", [])
 
-        print("Switching to fallback model...")
+                    if not candidates:
+                        raise RuntimeError(
+                            "Gemini returned no candidates."
+                        )
+
+                    parts = (
+                        candidates[0]
+                        .get("content", {})
+                        .get("parts", [])
+                    )
+
+                    text_parts = []
+
+                    for part in parts:
+                        if "text" in part:
+                            text_parts.append(part["text"])
+
+                    result = "\n".join(text_parts).strip()
+
+                    if result:
+                        return result
+
+                    raise RuntimeError(
+                        "Gemini returned empty text."
+                    )
+
+                if response.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(5 * attempt)
+                    continue
+
+                print(response.text[:1000])
+
+                break
+
+            except Exception as e:
+                print("Gemini error:", e)
+
+                if attempt < 3:
+                    time.sleep(5)
 
     raise RuntimeError(
-        "All Gemini models failed. "
-        "No content package could be generated."
+        "All Gemini models failed."
     )
 
 
-# ============================================================
-# SAVE CONTENT PACKAGE
-# ============================================================
+def extract_json(text):
+    text = text.strip()
 
-def save_package(package, state):
+    text = re.sub(
+        r"^```json\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
 
-    now = datetime.now(
+    text = re.sub(
+        r"^```\s*",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text
+    )
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    match = re.search(
+        r"\{.*\}",
+        text,
+        flags=re.DOTALL
+    )
+
+    if not match:
+        raise RuntimeError(
+            "Could not find JSON in Gemini response."
+        )
+
+    return json.loads(match.group(0))
+
+
+def word_count(text):
+    return len(
+        re.findall(
+            r"\b[\w'-]+\b",
+            text or ""
+        )
+    )
+
+
+def normalize_package(data):
+    title = clean_text(data.get("title", ""))
+    description = clean_text(data.get("description", ""))
+    hook = clean_text(data.get("hook", ""))
+    script = clean_text(data.get("script", ""))
+
+    hashtags = data.get("hashtags", [])
+    tags = data.get("tags", [])
+    scenes = data.get("scenes", [])
+
+    if not isinstance(hashtags, list):
+        hashtags = []
+
+    if not isinstance(tags, list):
+        tags = []
+
+    if not isinstance(scenes, list):
+        scenes = []
+
+    normalized_scenes = []
+
+    for index, scene in enumerate(scenes, start=1):
+        if not isinstance(scene, dict):
+            continue
+
+        narration = clean_text(
+            scene.get("narration", "")
+        )
+
+        if not narration:
+            continue
+
+        normalized_scenes.append(
+            {
+                "scene_number": index,
+                "heading": clean_text(
+                    scene.get(
+                        "heading",
+                        f"Scene {index}"
+                    )
+                ),
+                "narration": narration,
+                "visual_query": clean_text(
+                    scene.get(
+                        "visual_query",
+                        title
+                    )
+                ),
+                "visual_type": clean_text(
+                    scene.get(
+                        "visual_type",
+                        "photo"
+                    )
+                ),
+                "on_screen_text": clean_text(
+                    scene.get(
+                        "on_screen_text",
+                        ""
+                    )
+                ),
+            }
+        )
+
+    return {
+        "topic": clean_text(
+            data.get("topic", "")
+        ),
+        "title": title,
+        "description": description,
+        "hashtags": hashtags,
+        "tags": tags,
+        "hook": hook,
+        "slug": clean_text(
+            data.get("slug", "")
+        ),
+        "script": script,
+        "scenes": normalized_scenes,
+    }
+
+
+def main():
+
+    print("=" * 60)
+    print("TechMind Studio - Automation Engine")
+    print("TARGET VIDEO LENGTH: 3:15 - 3:45")
+    print("=" * 60)
+
+    state = load_state()
+
+    used_topics = [
+        clean_text(x).lower()
+        for x in state.get("used_topics", [])
+    ]
+
+    print(
+        f"Previous topics: {len(used_topics)}"
+    )
+
+    headlines = fetch_ai_news()
+
+    if not headlines:
+        headlines = [
+            "Latest artificial intelligence developments",
+            "New AI tools changing productivity",
+            "The latest AI technology people should know",
+        ]
+
+    available = [
+        h for h in headlines
+        if clean_text(h).lower() not in used_topics
+    ]
+
+    if not available:
+        available = headlines
+
+    news_text = "\n".join(
+        f"- {h}"
+        for h in available[:15]
+    )
+
+    prompt = f"""
+You are the senior content producer for a YouTube channel called
+"TechMind Studio".
+
+Create ONE original, highly engaging AI/technology YouTube video.
+
+The final narration must be suitable for approximately
+3 minutes 15 seconds to 3 minutes 45 seconds.
+
+IMPORTANT:
+- Total script narration: 480-530 words.
+- Do NOT write 650+ words.
+- Create exactly 9 scenes.
+- Each scene should contain useful narration.
+- The video must feel like a professional YouTube tutorial/explainer.
+- Strong hook in the first 10 seconds.
+- No filler.
+- No repeated points.
+- Natural spoken English.
+- Explain the topic clearly.
+- Use practical examples.
+- End with a short CTA for TechMind Studio.
+
+Fresh news headlines:
+{news_text}
+
+Return ONLY valid JSON.
+
+Required structure:
+
+{{
+  "topic": "...",
+  "title": "...",
+  "description": "...",
+  "hashtags": ["#AI", "#ArtificialIntelligence"],
+  "tags": ["AI", "artificial intelligence"],
+  "hook": "...",
+  "slug": "...",
+  "script": "...",
+  "scenes": [
+    {{
+      "scene_number": 1,
+      "heading": "...",
+      "narration": "...",
+      "visual_query": "...",
+      "visual_type": "photo",
+      "on_screen_text": "..."
+    }}
+  ]
+}}
+
+TITLE RULES:
+- Attractive YouTube title.
+- Include 1-2 relevant emojis such as 🤖, 🔥, 🚀, 💡.
+- Do not use fake claims.
+- Keep it under 100 characters.
+
+DESCRIPTION:
+- Write a useful YouTube description.
+- Include a natural CTA.
+- Do not put hashtags in the description field.
+
+HASHTAGS:
+- Provide 5-8 relevant hashtags.
+- Every hashtag must begin with #.
+
+TAGS:
+- Provide 10-15 relevant YouTube search tags.
+
+SCRIPT:
+- 480-530 words total.
+- Strong opening.
+- Natural narration.
+- No section labels inside narration.
+
+SCENES:
+- Exactly 9 scenes.
+- The combined narration should match the script.
+- Every scene needs a distinct visual_query.
+- Visual queries should be easy to search on Wikimedia Commons.
+- Avoid copyrighted logos where possible.
+"""
+
+    print("Generating a NEW topic...")
+
+    raw = call_gemini(prompt)
+
+    data = extract_json(raw)
+
+    package = normalize_package(data)
+
+    script_words = word_count(
+        package["script"]
+    )
+
+    scene_words = sum(
+        word_count(
+            scene["narration"]
+        )
+        for scene in package["scenes"]
+    )
+
+    print("Generated title:")
+    print(package["title"])
+
+    print(
+        f"Script words: {script_words}"
+    )
+
+    print(
+        f"Scene count: {len(package['scenes'])}"
+    )
+
+    # If Gemini produced no scenes, create a simple
+    # fallback scene list from the script.
+    if len(package["scenes"]) == 0:
+
+        print(
+            "WARNING: Gemini returned no scenes."
+        )
+
+        words = package["script"].split()
+
+        if words:
+            chunk_size = max(
+                1,
+                math.ceil(
+                    len(words) / TARGET_SCENES
+                )
+            )
+
+            generated = []
+
+            for i in range(
+                0,
+                len(words),
+                chunk_size
+            ):
+                chunk = " ".join(
+                    words[i:i + chunk_size]
+                )
+
+                scene_number = len(generated) + 1
+
+                generated.append(
+                    {
+                        "scene_number": scene_number,
+                        "heading": f"Scene {scene_number}",
+                        "narration": chunk,
+                        "visual_query": package["topic"],
+                        "visual_type": "photo",
+                        "on_screen_text": "",
+                    }
+                )
+
+            package["scenes"] = generated
+
+    package["script_word_count"] = word_count(
+        package["script"]
+    )
+
+    package["scene_word_count"] = scene_words
+
+    package["estimated_duration_seconds"] = round(
+        package["script_word_count"] / 145 * 60
+    )
+
+    package["generated_at"] = datetime.now(
         timezone.utc
     ).isoformat()
 
-    package["channel"] = "TechMind Studio"
-    package["generated_at"] = now
+    # Save used topic.
+    topic = package.get("topic", "")
 
-    # Clean hashtag values
-    cleaned_hashtags = []
+    if topic:
+        state.setdefault(
+            "used_topics",
+            []
+        )
 
-    for hashtag in package.get("hashtags", []):
+        state["used_topics"].append(topic)
 
-        hashtag = str(hashtag).strip()
+        # Keep state manageable.
+        state["used_topics"] = (
+            state["used_topics"][-100:]
+        )
 
-        if hashtag and not hashtag.startswith("#"):
-            hashtag = "#" + hashtag
+    save_state(state)
 
-        if hashtag:
-            cleaned_hashtags.append(hashtag)
-
-    package["hashtags"] = cleaned_hashtags
-
-    # Clean tags
-    package["tags"] = [
-        str(tag).strip()
-        for tag in package.get("tags", [])
-        if str(tag).strip()
-    ]
-
-    # Save package
     with open(
-        OUTPUT_FILE,
+        CONTENT_FILE,
         "w",
         encoding="utf-8"
     ) as f:
-
         json.dump(
             package,
             f,
@@ -554,80 +563,24 @@ def save_package(package, state):
             ensure_ascii=False
         )
 
-    # Update state
-    state["generated_topics"].append(
-        package["topic"]
-    )
-
-    state["generated_titles"].append(
-        package["title"]
-    )
-
-    # Keep state manageable
-    state["generated_topics"] = (
-        state["generated_topics"][-50:]
-    )
-
-    state["generated_titles"] = (
-        state["generated_titles"][-50:]
-    )
-
-    state["last_run"] = now
-
-    state["run_count"] = (
-        int(state.get("run_count", 0)) + 1
-    )
-
-    save_state(state)
-
-    print()
     print("=" * 60)
-    print("CONTENT PACKAGE SAVED")
-    print("=" * 60)
-
-    print(f"File: {OUTPUT_FILE}")
-    print(f"State: {STATE_FILE}")
-    print(f"Run count: {state['run_count']}")
-    print("=" * 60)
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY secret is missing."
-        )
-
-    state = load_state()
-
+    print("CONTENT PACKAGE CREATED")
+    print("Title:", package["title"])
     print(
-        "Previous topics:",
-        len(state.get("generated_topics", []))
+        "Words:",
+        package["script_word_count"]
     )
-
-    headlines = get_news()
-
-    package = generate_content(
-        headlines=headlines,
-        state=state
+    print(
+        "Scenes:",
+        len(package["scenes"])
     )
-
-    save_package(
-        package=package,
-        state=state
+    print(
+        "Estimated duration:",
+        package["estimated_duration_seconds"],
+        "seconds"
     )
+    print("=" * 60)
 
-    print()
-    print("Automation engine completed successfully.")
-
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
     main()
