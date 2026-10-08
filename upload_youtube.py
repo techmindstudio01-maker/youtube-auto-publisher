@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -18,9 +19,13 @@ TOKEN_ENV = "YOUTUBE_TOKEN_JSON"
 VIDEO_FILE = Path("techmind_studio_long.mp4")
 PACKAGE_FILE = Path("content_package.json")
 
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload"
+]
+
 
 # ============================================================
-# HELPERS
+# ERROR
 # ============================================================
 
 def fail(message):
@@ -30,66 +35,158 @@ def fail(message):
     sys.exit(1)
 
 
+# ============================================================
+# LOAD CONTENT
+# ============================================================
+
 def load_package():
+
     if not PACKAGE_FILE.exists():
-        fail("content_package.json not found.")
+        fail(
+            "content_package.json not found."
+        )
 
     try:
+
         with open(
             PACKAGE_FILE,
             "r",
             encoding="utf-8"
-        ) as f:
-            return json.load(f)
+        ) as file:
+
+            return json.load(file)
 
     except Exception as error:
+
         fail(
             "Could not read content_package.json: "
             + str(error)
         )
 
 
+# ============================================================
+# LOAD + REFRESH YOUTUBE CREDENTIALS
+# ============================================================
+
 def load_credentials():
+
     token_json = os.environ.get(
         TOKEN_ENV,
         ""
     ).strip()
 
     if not token_json:
+
         fail(
             "YOUTUBE_TOKEN_JSON GitHub secret is missing."
         )
 
     try:
+
         token_data = json.loads(
             token_json
         )
 
     except Exception as error:
+
         fail(
-            "YOUTUBE_TOKEN_JSON is not valid JSON: "
+            "YOUTUBE_TOKEN_JSON is invalid JSON: "
             + str(error)
         )
 
-    scopes = [
-        "https://www.googleapis.com/auth/youtube.upload"
+    required = [
+        "client_id",
+        "client_secret",
+        "refresh_token"
     ]
 
+    for field in required:
+
+        if not token_data.get(field):
+
+            fail(
+                "YOUTUBE_TOKEN_JSON is missing: "
+                + field
+            )
+
     try:
-        credentials = Credentials.from_authorized_user_info(
-            token_data,
-            scopes=scopes
+
+        credentials = Credentials(
+            token=token_data.get(
+                "access_token"
+            ),
+            refresh_token=token_data.get(
+                "refresh_token"
+            ),
+            token_uri=token_data.get(
+                "token_uri",
+                "https://oauth2.googleapis.com/token"
+            ),
+            client_id=token_data.get(
+                "client_id"
+            ),
+            client_secret=token_data.get(
+                "client_secret"
+            ),
+            scopes=SCOPES
         )
 
     except Exception as error:
+
         fail(
-            "Could not load YouTube credentials: "
+            "Could not create YouTube credentials: "
             + str(error)
         )
 
+    # --------------------------------------------------------
+    # AUTOMATIC ACCESS TOKEN REFRESH
+    # --------------------------------------------------------
+
     if not credentials.valid:
-        fail(
-            "YouTube credentials are not valid."
+
+        if not credentials.refresh_token:
+
+            fail(
+                "YouTube access token is invalid and "
+                "no refresh token is available."
+            )
+
+        print(
+            "Access token is expired/invalid."
+        )
+
+        print(
+            "Refreshing automatically..."
+        )
+
+        try:
+
+            credentials.refresh(
+                Request()
+            )
+
+        except Exception as error:
+
+            fail(
+                "YouTube token refresh failed: "
+                + str(error)
+            )
+
+        if not credentials.valid:
+
+            fail(
+                "YouTube credentials are still invalid "
+                "after refresh."
+            )
+
+        print(
+            "Access token successfully refreshed."
+        )
+
+    else:
+
+        print(
+            "YouTube access token is valid."
         )
 
     return credentials
@@ -99,16 +196,26 @@ def load_credentials():
 # YOUTUBE SERVICE
 # ============================================================
 
-def create_youtube_service(credentials):
+def create_youtube_service(
+    credentials
+):
 
     try:
-        return build(
+
+        youtube = build(
             "youtube",
             "v3",
             credentials=credentials
         )
 
+        print(
+            "YouTube API connection ready."
+        )
+
+        return youtube
+
     except Exception as error:
+
         fail(
             "Could not connect to YouTube API: "
             + str(error)
@@ -116,7 +223,7 @@ def create_youtube_service(credentials):
 
 
 # ============================================================
-# METADATA
+# DESCRIPTION
 # ============================================================
 
 def build_description(data):
@@ -137,6 +244,7 @@ def build_description(data):
         hashtags,
         list
     ):
+
         hashtags = []
 
     hashtag_text = " ".join(
@@ -146,7 +254,9 @@ def build_description(data):
     )
 
     if hashtag_text:
+
         if hashtag_text not in description:
+
             description += (
                 "\n\n"
                 + hashtag_text
@@ -154,6 +264,10 @@ def build_description(data):
 
     return description.strip()
 
+
+# ============================================================
+# TAGS
+# ============================================================
 
 def build_tags(data):
 
@@ -166,15 +280,20 @@ def build_tags(data):
         tags,
         list
     ):
+
         return []
 
     clean_tags = []
 
     for tag in tags:
+
         tag = str(tag).strip()
 
         if tag and tag not in clean_tags:
-            clean_tags.append(tag)
+
+            clean_tags.append(
+                tag
+            )
 
     return clean_tags[:15]
 
@@ -189,6 +308,7 @@ def upload_video(
 ):
 
     if not VIDEO_FILE.exists():
+
         fail(
             "techmind_studio_long.mp4 not found."
         )
@@ -278,6 +398,7 @@ def upload_video(
             status, response = request.next_chunk()
 
             if status:
+
                 progress = int(
                     status.progress() * 100
                 )
@@ -291,6 +412,7 @@ def upload_video(
         )
 
         if not video_id:
+
             fail(
                 "YouTube upload returned no video ID."
             )
@@ -336,6 +458,11 @@ def upload_video(
 # ============================================================
 
 def main():
+
+    print("")
+    print(
+        "Starting TechMind Studio YouTube uploader..."
+    )
 
     data = load_package()
 
