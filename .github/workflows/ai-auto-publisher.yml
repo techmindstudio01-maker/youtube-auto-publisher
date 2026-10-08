@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Every day at 6:00 PM India time (12:30 UTC)
+    # Every day at 6:00 PM India time
     - cron: "30 12 * * *"
 
 permissions:
@@ -16,31 +16,38 @@ jobs:
 
     steps:
 
-      # ==========================================
-      # 1. Checkout repository
-      # ==========================================
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ==========================================
-      # 2. Setup Python
-      # ==========================================
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ==========================================
-      # 3. Install FFmpeg
-      # ==========================================
+
+      # ======================================================
+      # FFMPEG
+      # ======================================================
+
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      # ==========================================
-      # 4. Install Python packages
-      # ==========================================
+
+      # ======================================================
+      # PYTHON PACKAGES
+      # ======================================================
+
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
@@ -54,18 +61,22 @@ jobs:
             google-auth-oauthlib \
             google-auth-httplib2
 
-      # ==========================================
-      # 5. Generate AI Content
-      # ==========================================
+
+      # ======================================================
+      # AI CONTENT
+      # ======================================================
+
       - name: Generate AI Content
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python creator.py
 
-      # ==========================================
-      # 6. Verify Content Package
-      # ==========================================
+
+      # ======================================================
+      # VERIFY CONTENT
+      # ======================================================
+
       - name: Verify Content Package
         run: |
           python - <<'PY'
@@ -87,23 +98,29 @@ jobs:
           print("==========================================")
           print("Content package verified.")
           print("Title:", data.get("title"))
+          print("Topic:", data.get("topic"))
           print("Script words:", data.get("script_word_count"))
-          print("Scenes:", len(data.get("scenes", [])))
-          print("Hashtags:", data.get("hashtags"))
-          print("Tags:", data.get("tags"))
+          print("Long scenes:", len(data.get("scenes", [])))
+          print("Short scenes:", len(data.get("short_scenes", [])))
+          print("Hashtags:", " ".join(data.get("hashtags", [])))
+          print("YouTube tags:", len(data.get("tags", [])))
           print("==========================================")
           PY
 
-      # ==========================================
-      # 7. Render Long-form Video
-      # ==========================================
+
+      # ======================================================
+      # RENDER LONG VIDEO
+      # ======================================================
+
       - name: Render Long Video
         run: |
           python video_renderer.py
 
-      # ==========================================
-      # 8. Verify Long-form Video
-      # ==========================================
+
+      # ======================================================
+      # VERIFY LONG VIDEO
+      # ======================================================
+
       - name: Verify Long Video
         run: |
           if [ ! -f "techmind_studio_long.mp4" ]; then
@@ -113,51 +130,29 @@ jobs:
 
           echo "Long video created successfully."
 
+          echo "Video duration:"
           ffprobe \
             -v error \
             -show_entries format=duration \
             -of default=noprint_wrappers=1:nokey=1 \
             techmind_studio_long.mp4
 
-      # ==========================================
-      # 9. Generate Professional Thumbnail
-      # ==========================================
-      - name: Generate Thumbnail
+
+      # ======================================================
+      # UPLOAD LONG VIDEO TO YOUTUBE
+      # ======================================================
+
+      - name: Upload Long Video to YouTube
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
         run: |
-          python thumbnail_generator.py
+          python upload_youtube.py
 
-      # ==========================================
-      # 10. Verify Thumbnail
-      # ==========================================
-      - name: Verify Thumbnail
-        run: |
-          if [ ! -f "techmind_studio_thumbnail.png" ]; then
-            echo "ERROR: Thumbnail was not created."
-            exit 1
-          fi
 
-          echo "Thumbnail created successfully."
+      # ======================================================
+      # SAVE CONTENT PACKAGE
+      # ======================================================
 
-          python - <<'PY'
-          from PIL import Image
-
-          image = Image.open("techmind_studio_thumbnail.png")
-
-          print("==========================================")
-          print("Thumbnail verified.")
-          print("Format:", image.format)
-          print("Size:", image.size)
-          print("==========================================")
-
-          if image.size != (1280, 720):
-              raise SystemExit(
-                  "ERROR: Thumbnail must be 1280x720."
-              )
-          PY
-
-      # ==========================================
-      # 11. Save Content Package
-      # ==========================================
       - name: Save Content Package
         uses: actions/upload-artifact@v4
         with:
@@ -165,9 +160,11 @@ jobs:
           path: content_package.json
           retention-days: 7
 
-      # ==========================================
-      # 12. Save Long Video
-      # ==========================================
+
+      # ======================================================
+      # SAVE LONG VIDEO
+      # ======================================================
+
       - name: Save Long Video
         uses: actions/upload-artifact@v4
         with:
@@ -175,19 +172,11 @@ jobs:
           path: techmind_studio_long.mp4
           retention-days: 7
 
-      # ==========================================
-      # 13. Save Thumbnail
-      # ==========================================
-      - name: Save Thumbnail
-        uses: actions/upload-artifact@v4
-        with:
-          name: techmind-studio-thumbnail
-          path: techmind_studio_thumbnail.png
-          retention-days: 7
 
-      # ==========================================
-      # 14. Save Automation State
-      # ==========================================
+      # ======================================================
+      # SAVE AUTOMATION STATE
+      # ======================================================
+
       - name: Save Automation State
         run: |
           git config user.name "TechMind Studio Automation"
