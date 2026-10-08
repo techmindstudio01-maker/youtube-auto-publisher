@@ -55,7 +55,7 @@ jobs:
             google-auth-httplib2
 
       # ==========================================
-      # 5. Generate AI content
+      # 5. Generate AI Content
       # ==========================================
       - name: Generate AI Content
         env:
@@ -64,7 +64,7 @@ jobs:
           python creator.py
 
       # ==========================================
-      # 6. Check generated content
+      # 6. Verify Content Package
       # ==========================================
       - name: Verify Content Package
         run: |
@@ -84,14 +84,41 @@ jobs:
           ) as f:
               data = json.load(f)
 
+          print("==========================================")
           print("Content package verified.")
           print("Title:", data.get("title"))
           print("Script words:", data.get("script_word_count"))
           print("Scenes:", len(data.get("scenes", [])))
+          print("==========================================")
           PY
 
       # ==========================================
-      # 7. Save Content Package
+      # 7. Render Long-form Video
+      # ==========================================
+      - name: Render Long Video
+        run: |
+          python video_renderer.py
+
+      # ==========================================
+      # 8. Verify Long-form Video
+      # ==========================================
+      - name: Verify Long Video
+        run: |
+          if [ ! -f "techmind_studio_long.mp4" ]; then
+            echo "ERROR: Long video was not created."
+            exit 1
+          fi
+
+          echo "Long video created successfully."
+
+          ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 \
+            techmind_studio_long.mp4
+
+      # ==========================================
+      # 9. Save Content Package
       # ==========================================
       - name: Save Content Package
         uses: actions/upload-artifact@v4
@@ -101,7 +128,17 @@ jobs:
           retention-days: 7
 
       # ==========================================
-      # 8. Save Automation State
+      # 10. Save Generated Long Video
+      # ==========================================
+      - name: Save Long Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: techmind-studio-long-video
+          path: techmind_studio_long.mp4
+          retention-days: 7
+
+      # ==========================================
+      # 11. Save Automation State
       # ==========================================
       - name: Save Automation State
         run: |
