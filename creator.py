@@ -14,40 +14,17 @@ from pathlib import Path
 
 CHANNEL_NAME = "TechMind Studio"
 
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
-    ""
-).strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 if not GEMINI_API_KEY:
-    raise RuntimeError(
-        "GEMINI_API_KEY is missing."
-    )
+    raise RuntimeError("GEMINI_API_KEY is missing.")
 
-PACKAGE_FILE = Path(
-    "content_package.json"
-)
-
-STATE_FILE = Path(
-    "automation_state.json"
-)
+PACKAGE_FILE = Path("content_package.json")
+STATE_FILE = Path("automation_state.json")
 
 
 # ============================================================
-# GEMINI MODELS
-# ============================================================
-
-# Primary model is the one that previously returned HTTP 200.
-# 429 models are skipped immediately.
-MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-]
-
-
-# ============================================================
-# HELPERS
+# BASIC HELPERS
 # ============================================================
 
 def clean_text(value):
@@ -55,25 +32,14 @@ def clean_text(value):
         return ""
 
     value = str(value)
-
-    value = value.replace(
-        "\r",
-        " "
-    )
-
-    value = re.sub(
-        r"\s+",
-        " ",
-        value
-    )
+    value = value.replace("\r", " ")
+    value = re.sub(r"\s+", " ", value)
 
     return value.strip()
 
 
 def word_count(text):
-    return len(
-        clean_text(text).split()
-    )
+    return len(clean_text(text).split())
 
 
 # ============================================================
@@ -106,42 +72,30 @@ def fetch_news():
     for url in feeds:
 
         try:
-
             response = requests.get(
                 url,
                 timeout=30,
                 headers={
-                    "User-Agent":
-                    "TechMindStudio/1.0"
+                    "User-Agent": "TechMindStudio/1.0"
                 }
             )
 
             response.raise_for_status()
 
-            root = ET.fromstring(
-                response.text
-            )
+            root = ET.fromstring(response.text)
 
-            for item in root.findall(
-                ".//item"
-            ):
+            for item in root.findall(".//item"):
 
                 title = clean_text(
-                    item.findtext(
-                        "title"
-                    )
+                    item.findtext("title")
                 )
 
                 link = clean_text(
-                    item.findtext(
-                        "link"
-                    )
+                    item.findtext("link")
                 )
 
                 description = clean_text(
-                    item.findtext(
-                        "description"
-                    )
+                    item.findtext("description")
                 )
 
                 if not title:
@@ -157,18 +111,191 @@ def fetch_news():
                 results.append({
                     "title": title,
                     "link": link,
-                    "description":
-                        description[:1000]
+                    "description": description[:1000]
                 })
 
         except Exception as error:
-
             print(
                 "News feed error:",
                 repr(error)
             )
 
     return results[:80]
+
+
+# ============================================================
+# GEMINI MODEL DISCOVERY
+# ============================================================
+
+def get_available_models():
+
+    url = (
+        "https://generativelanguage.googleapis.com/"
+        "v1beta/models"
+    )
+
+    try:
+
+        response = requests.get(
+            url,
+            headers={
+                "x-goog-api-key": GEMINI_API_KEY
+            },
+            params={
+                "pageSize": 100
+            },
+            timeout=30
+        )
+
+        print(
+            "Gemini model-list HTTP:",
+            response.status_code
+        )
+
+        if response.status_code != 200:
+
+            print(
+                "Could not retrieve model list."
+            )
+
+            print(
+                response.text[:1000]
+            )
+
+            return []
+
+        data = response.json()
+
+        models = []
+
+        for item in data.get(
+            "models",
+            []
+        ):
+
+            name = clean_text(
+                item.get("name", "")
+            )
+
+            methods = item.get(
+                "supportedGenerationMethods",
+                []
+            )
+
+            if not name:
+                continue
+
+            if (
+                "generateContent"
+                not in methods
+            ):
+                continue
+
+            model_name = name.split(
+                "/"
+            )[-1]
+
+            lower = model_name.lower()
+
+            # Prefer modern Flash models.
+            score = 0
+
+            if "flash" in lower:
+                score += 100
+
+            if "flash-lite" in lower:
+                score += 20
+
+            if "pro" in lower:
+                score -= 20
+
+            if "experimental" in lower:
+                score -= 10
+
+            if "preview" in lower:
+                score -= 5
+
+            # Avoid obviously unsuitable models.
+            if (
+                "embedding" in lower
+                or "image" in lower
+                or "tts" in lower
+                or "robotics" in lower
+            ):
+                continue
+
+            models.append(
+                (
+                    score,
+                    model_name
+                )
+            )
+
+        models.sort(
+            key=lambda item: (
+                -item[0],
+                item[1]
+            )
+        )
+
+        unique = []
+        seen = set()
+
+        for _, model in models:
+
+            if model in seen:
+                continue
+
+            seen.add(model)
+            unique.append(model)
+
+        return unique
+
+    except Exception as error:
+
+        print(
+            "Model discovery error:",
+            repr(error)
+        )
+
+        return []
+
+
+def build_model_list():
+
+    discovered = get_available_models()
+
+    print("")
+    print(
+        "Available Gemini generation models:"
+    )
+
+    for model in discovered[:20]:
+        print(
+            " -",
+            model
+        )
+
+    # Fallback names in case the model-list endpoint
+    # temporarily fails.
+    fallback = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash"
+    ]
+
+    final_models = []
+
+    for model in (
+        discovered + fallback
+    ):
+
+        if model not in final_models:
+            final_models.append(model)
+
+    return final_models[:12]
 
 
 # ============================================================
@@ -184,7 +311,6 @@ def extract_json(text):
 
     text = str(text).strip()
 
-    # Remove markdown fences.
     text = re.sub(
         r"```json",
         "",
@@ -257,9 +383,7 @@ def extract_json(text):
 
 def parse_json(text):
 
-    extracted = extract_json(
-        text
-    )
+    extracted = extract_json(text)
 
     # Normal JSON.
     try:
@@ -268,7 +392,6 @@ def parse_json(text):
         )
 
     except Exception as error:
-
         print(
             "Normal JSON failed:",
             error
@@ -287,13 +410,12 @@ def parse_json(text):
         )
 
     except Exception as error:
-
         print(
             "Trailing-comma repair failed:",
             error
         )
 
-    # Common unquoted-key repair.
+    # Repair simple unquoted keys.
     repaired = re.sub(
         r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:',
         r'\1"\2":',
@@ -306,7 +428,23 @@ def parse_json(text):
         )
 
     except Exception as error:
+        print(
+            "Key repair failed:",
+            error
+        )
 
+    # Repair single quotes in simple cases.
+    repaired = repaired.replace(
+        "': '",
+        '": "'
+    )
+
+    try:
+        return json.loads(
+            repaired
+        )
+
+    except Exception as error:
         print(
             "Final JSON repair failed:",
             error
@@ -318,7 +456,7 @@ def parse_json(text):
 
 
 # ============================================================
-# GEMINI API
+# GEMINI REQUEST
 # ============================================================
 
 def gemini_request(
@@ -344,10 +482,9 @@ def gemini_request(
             }
         ],
         "generationConfig": {
-            "temperature": 0.75,
+            "temperature": 0.70,
             "maxOutputTokens": 9000,
-            "responseMimeType":
-                "application/json"
+            "responseMimeType": "application/json"
         }
     }
 
@@ -360,7 +497,7 @@ def gemini_request(
                 GEMINI_API_KEY
         },
         json=payload,
-        timeout=120
+        timeout=180
     )
 
     print(
@@ -375,8 +512,7 @@ def gemini_request(
         )
 
         raise RuntimeError(
-            f"Gemini HTTP "
-            f"{response.status_code}"
+            f"Gemini HTTP {response.status_code}"
         )
 
     data = response.json()
@@ -402,7 +538,6 @@ def gemini_request(
     for part in parts:
 
         if "text" in part:
-
             text += str(
                 part["text"]
             )
@@ -412,26 +547,34 @@ def gemini_request(
             "Gemini returned empty text."
         )
 
-    return parse_json(
-        text
-    )
+    return parse_json(text)
 
 
-def generate_with_gemini(
-    prompt
-):
+# ============================================================
+# GEMINI GENERATION WITH SMART FALLBACK
+# ============================================================
+
+def generate_with_gemini(prompt):
+
+    models = build_model_list()
+
+    if not models:
+
+        raise RuntimeError(
+            "No Gemini models available."
+        )
 
     last_error = None
 
     for number, model in enumerate(
-        MODELS,
+        models,
         start=1
     ):
 
         print("")
         print(
             f"Gemini attempt "
-            f"{number}/{len(MODELS)}..."
+            f"{number}/{len(models)}..."
         )
 
         print(
@@ -452,7 +595,7 @@ def generate_with_gemini(
 
             return result
 
-        except RuntimeError as error:
+        except Exception as error:
 
             last_error = error
 
@@ -460,42 +603,45 @@ def generate_with_gemini(
                 error
             )
 
+            print(
+                "Generation failed:",
+                error_text
+            )
+
             # ------------------------------------------------
-            # 429 QUOTA
+            # QUOTA
             # ------------------------------------------------
 
             if "429" in error_text:
 
                 print(
-                    "429 quota exceeded."
+                    "429 quota/rate limit."
                 )
 
                 print(
-                    "Skipping this model immediately."
+                    "Skipping this model."
                 )
 
                 continue
 
             # ------------------------------------------------
-            # 503 TEMPORARY
+            # HIGH DEMAND
             # ------------------------------------------------
 
             if "503" in error_text:
 
                 print(
-                    "503 temporary model issue."
+                    "503 model temporarily unavailable."
                 )
 
                 print(
-                    "Moving to next model."
+                    "Trying another available model."
                 )
-
-                time.sleep(2)
 
                 continue
 
             # ------------------------------------------------
-            # 404
+            # MODEL NOT FOUND
             # ------------------------------------------------
 
             if "404" in error_text:
@@ -504,28 +650,55 @@ def generate_with_gemini(
                     "404 model unavailable."
                 )
 
+                continue
+
+            # ------------------------------------------------
+            # OTHER SERVER ERROR
+            # ------------------------------------------------
+
+            if "500" in error_text:
+
                 print(
-                    "Moving to next model."
+                    "500 server error."
                 )
 
                 continue
 
+            # ------------------------------------------------
+            # INVALID REQUEST
+            # ------------------------------------------------
+
+            if "400" in error_text:
+
+                print(
+                    "400 request error."
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # AUTH
+            # ------------------------------------------------
+
+            if "401" in error_text:
+
+                raise RuntimeError(
+                    "Gemini API key is invalid "
+                    "or unauthorized."
+                )
+
+            # ------------------------------------------------
+            # OTHER ERROR
+            # ------------------------------------------------
+
             print(
-                "Generation failed:",
-                error
+                "Unexpected model error."
             )
 
-        except Exception as error:
-
-            last_error = error
-
-            print(
-                "Unexpected Gemini error:",
-                repr(error)
-            )
+            continue
 
     raise RuntimeError(
-        "All Gemini attempts failed: "
+        "All available Gemini models failed. "
         + str(last_error)
     )
 
@@ -537,6 +710,7 @@ def generate_with_gemini(
 def load_state():
 
     if not STATE_FILE.exists():
+
         return {
             "previous_topics": []
         }
@@ -553,6 +727,7 @@ def load_state():
             data,
             dict
         ):
+
             return {
                 "previous_topics": []
             }
@@ -566,6 +741,7 @@ def load_state():
             topics,
             list
         ):
+
             topics = []
 
         data["previous_topics"] = topics
@@ -579,17 +755,16 @@ def load_state():
         }
 
 
+# ============================================================
+# START
+# ============================================================
+
 state = load_state()
 
 previous_topics = state.get(
     "previous_topics",
     []
 )
-
-
-# ============================================================
-# NEWS
-# ============================================================
 
 print("")
 print(
@@ -635,21 +810,18 @@ news_context = []
 for item in news:
 
     news_context.append(
-        (
-            "HEADLINE: "
-            + item["title"]
-            + "\nDESCRIPTION: "
-            + item["description"]
-            + "\nURL: "
-            + item["link"]
-        )
+        "HEADLINE: "
+        + item["title"]
+        + "\nDESCRIPTION: "
+        + item["description"]
+        + "\nURL: "
+        + item["link"]
     )
 
 
 news_text = "\n\n".join(
     news_context
 )
-
 
 previous_text = "\n".join(
     [
@@ -720,7 +892,7 @@ Avoid:
 LONG VIDEO
 ==================================================
 
-Target:
+Target duration:
 
 3 minutes 15 seconds to 3 minutes 45 seconds.
 
@@ -730,7 +902,7 @@ Target narration:
 
 Create EXACTLY 9 scenes.
 
-The story structure:
+Story structure:
 
 1. Powerful hook
 2. Problem/opportunity
@@ -742,9 +914,9 @@ The story structure:
 8. Key lesson
 9. Conclusion + CTA
 
-The narration must sound natural when spoken.
+Narration must sound natural when spoken.
 
-Do NOT write:
+Do NOT start with:
 
 "Today we are going to talk about..."
 
@@ -755,12 +927,12 @@ or a surprising statement.
 VISUALS
 ==================================================
 
-Every scene needs a visual that directly matches
-its narration.
+Every scene needs visuals directly matching
+the narration.
 
 Use different visual types.
 
-Possible visual types:
+Possible types:
 
 browser_ui
 dashboard
@@ -783,7 +955,7 @@ Under 100 characters.
 
 Use 1-2 relevant emojis.
 
-Examples:
+Possible emojis:
 
 🤖
 🔥
@@ -832,7 +1004,7 @@ The Short must have:
 - strong ending
 
 ==================================================
-IMPORTANT
+OUTPUT
 ==================================================
 
 Return ONLY valid JSON.
@@ -849,11 +1021,8 @@ JSON structure:
 
 {{
   "topic": "...",
-
   "source_url": "...",
-
   "title": "...",
-
   "description": "...",
 
   "hashtags": [
@@ -907,10 +1076,10 @@ CRITICAL:
 The "script" field must contain the COMPLETE
 long-video narration.
 
-The scene narration fields must contain the
-same narration divided across the 9 scenes.
+Scene narration fields must contain the same
+narration divided across the 9 scenes.
 
-The total script should be 470-530 words.
+Total script should be 470-530 words.
 
 The JSON must be valid.
 """
@@ -930,7 +1099,7 @@ data = generate_with_gemini(
 
 
 # ============================================================
-# VALIDATE BASIC FIELDS
+# VALIDATE
 # ============================================================
 
 required_fields = [
@@ -955,13 +1124,15 @@ for field in required_fields:
 
 
 # ============================================================
-# NORMALIZE SCRIPT
+# SCRIPT
 # ============================================================
 
 script = clean_text(
-    data.get("script", "")
+    data.get(
+        "script",
+        ""
+    )
 )
-
 
 scenes = data.get(
     "scenes",
@@ -972,13 +1143,9 @@ if not isinstance(
     scenes,
     list
 ):
+
     scenes = []
 
-
-# ------------------------------------------------------------
-# If Gemini forgot script but provided scene narration,
-# rebuild the script automatically.
-# ------------------------------------------------------------
 
 if word_count(script) < 50:
 
@@ -986,17 +1153,22 @@ if word_count(script) < 50:
 
     for scene in scenes:
 
-        narration = clean_text(
-            scene.get(
-                "narration",
-                ""
-            )
-        )
+        if isinstance(
+            scene,
+            dict
+        ):
 
-        if narration:
-            scene_narration.append(
-                narration
+            narration = clean_text(
+                scene.get(
+                    "narration",
+                    ""
+                )
             )
+
+            if narration:
+                scene_narration.append(
+                    narration
+                )
 
     script = " ".join(
         scene_narration
@@ -1014,7 +1186,7 @@ data["script"] = script
 
 
 # ============================================================
-# EXACT 9 LONG SCENES
+# LONG SCENES
 # ============================================================
 
 if len(scenes) != 9:
@@ -1034,6 +1206,7 @@ for index, scene in enumerate(
         scene,
         dict
     ):
+
         raise RuntimeError(
             f"Scene {index} is invalid."
         )
@@ -1091,6 +1264,7 @@ for index, scene in enumerate(
         visuals,
         list
     ):
+
         visuals = []
 
     scene["key_visuals"] = [
@@ -1126,6 +1300,7 @@ if not isinstance(
     short_scenes,
     list
 ):
+
     short_scenes = []
 
 
@@ -1146,6 +1321,7 @@ for index, scene in enumerate(
         scene,
         dict
     ):
+
         raise RuntimeError(
             f"Short scene {index} is invalid."
         )
@@ -1203,6 +1379,7 @@ for index, scene in enumerate(
         visuals,
         list
     ):
+
         visuals = []
 
     scene["key_visuals"] = [
@@ -1249,6 +1426,7 @@ if not isinstance(
     hashtags,
     list
 ):
+
     hashtags = []
 
 
@@ -1300,6 +1478,7 @@ if not isinstance(
     tags,
     list
 ):
+
     tags = []
 
 
@@ -1377,20 +1556,13 @@ data["source_url"] = source_url
 # COMPATIBILITY FIELDS
 # ============================================================
 
-# Current renderer expects "script".
-# Older renderer versions expect "long_scenes".
-# Workflow expects "scenes".
-# We provide ALL THREE.
-
 data["long_scenes"] = scenes
-
 data["scenes"] = scenes
-
 data["short_scenes"] = short_scenes
 
 
 # ============================================================
-# WORD COUNT
+# WORD COUNT / DURATION
 # ============================================================
 
 script_words = word_count(
@@ -1401,13 +1573,9 @@ data["script_word_count"] = (
     script_words
 )
 
-
-# Approximate duration.
-# 145 words/minute.
 estimated_duration = (
     script_words / 145
 ) * 60
-
 
 data[
     "estimated_duration_seconds"
@@ -1417,13 +1585,13 @@ data[
 
 
 # ============================================================
-# DURATION VALIDATION
+# VALIDATION
 # ============================================================
 
 if script_words < 430:
 
     print(
-        "WARNING: script is shorter than target:",
+        "WARNING: script shorter than target:",
         script_words,
         "words"
     )
@@ -1431,7 +1599,7 @@ if script_words < 430:
 elif script_words > 570:
 
     print(
-        "WARNING: script is longer than target:",
+        "WARNING: script longer than target:",
         script_words,
         "words"
     )
@@ -1460,7 +1628,7 @@ PACKAGE_FILE.write_text(
 
 
 # ============================================================
-# UPDATE AUTOMATION STATE
+# UPDATE STATE
 # ============================================================
 
 topic = clean_text(
@@ -1493,8 +1661,7 @@ new_state = {
     "channel": CHANNEL_NAME,
     "last_topic": topic,
     "last_title": data["title"],
-    "last_script_word_count":
-        script_words,
+    "last_script_word_count": script_words,
     "last_estimated_duration_seconds":
         round(estimated_duration),
     "previous_topics":
@@ -1579,23 +1746,19 @@ print(
 )
 
 print(
-    "Script field:",
-    "READY"
+    "Script field: READY"
 )
 
 print(
-    "long_scenes field:",
-    "READY"
+    "long_scenes field: READY"
 )
 
 print(
-    "content_package.json:",
-    "READY"
+    "content_package.json: READY"
 )
 
 print(
-    "automation_state.json:",
-    "READY"
+    "automation_state.json: READY"
 )
 
 print(
