@@ -8,22 +8,37 @@ from pathlib import Path
 
 
 # ============================================================
-# TECHMIND STUDIO — AI CONTENT CREATOR
+# TECHMIND STUDIO
+# AI CONTENT CREATOR
 # ============================================================
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is missing.")
-
-PACKAGE_FILE = Path("content_package.json")
-STATE_FILE = Path("automation_state.json")
 
 CHANNEL_NAME = "TechMind Studio"
 
-# IMPORTANT:
-# Quota-exhausted models are skipped immediately.
-# Do NOT keep retrying a 429 model.
+GEMINI_API_KEY = os.environ.get(
+    "GEMINI_API_KEY",
+    ""
+).strip()
+
+if not GEMINI_API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing."
+    )
+
+PACKAGE_FILE = Path(
+    "content_package.json"
+)
+
+STATE_FILE = Path(
+    "automation_state.json"
+)
+
+
+# ============================================================
+# GEMINI MODELS
+# ============================================================
+
+# Primary model is the one that previously returned HTTP 200.
+# 429 models are skipped immediately.
 MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.7-flash",
@@ -32,7 +47,7 @@ MODELS = [
 
 
 # ============================================================
-# BASIC HELPERS
+# HELPERS
 # ============================================================
 
 def clean_text(value):
@@ -41,13 +56,32 @@ def clean_text(value):
 
     value = str(value)
 
-    value = value.replace("\r", " ")
-    value = re.sub(r"\s+", " ", value)
+    value = value.replace(
+        "\r",
+        " "
+    )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value
+    )
 
     return value.strip()
 
 
-def get_news():
+def word_count(text):
+    return len(
+        clean_text(text).split()
+    )
+
+
+# ============================================================
+# NEWS
+# ============================================================
+
+def fetch_news():
+
     feeds = [
         (
             "https://news.google.com/rss/search?"
@@ -69,31 +103,45 @@ def get_news():
     results = []
     seen = set()
 
-    for feed_url in feeds:
+    for url in feeds:
+
         try:
+
             response = requests.get(
-                feed_url,
+                url,
                 timeout=30,
                 headers={
-                    "User-Agent": "TechMindStudio/1.0"
-                },
+                    "User-Agent":
+                    "TechMindStudio/1.0"
+                }
             )
 
             response.raise_for_status()
 
-            root = ET.fromstring(response.text)
+            root = ET.fromstring(
+                response.text
+            )
 
-            for item in root.findall(".//item"):
+            for item in root.findall(
+                ".//item"
+            ):
+
                 title = clean_text(
-                    item.findtext("title")
+                    item.findtext(
+                        "title"
+                    )
                 )
 
                 link = clean_text(
-                    item.findtext("link")
+                    item.findtext(
+                        "link"
+                    )
                 )
 
                 description = clean_text(
-                    item.findtext("description")
+                    item.findtext(
+                        "description"
+                    )
                 )
 
                 if not title:
@@ -109,40 +157,43 @@ def get_news():
                 results.append({
                     "title": title,
                     "link": link,
-                    "description": description[:800],
+                    "description":
+                        description[:1000]
                 })
 
         except Exception as error:
+
             print(
                 "News feed error:",
                 repr(error)
             )
 
-    return results[:60]
+    return results[:80]
 
 
 # ============================================================
-# JSON EXTRACTION / REPAIR
+# JSON EXTRACTION
 # ============================================================
 
 def extract_json(text):
+
     if not text:
         raise ValueError(
-            "Gemini returned empty response."
+            "Gemini returned empty text."
         )
 
     text = str(text).strip()
 
     # Remove markdown fences.
     text = re.sub(
-        r"```json\s*",
+        r"```json",
         "",
         text,
         flags=re.IGNORECASE
     )
 
     text = re.sub(
-        r"```\s*",
+        r"```",
         "",
         text
     )
@@ -158,9 +209,12 @@ def extract_json(text):
     in_string = False
     escaped = False
 
-    for i in range(start, len(text)):
+    for index in range(
+        start,
+        len(text)
+    ):
 
-        char = text[i]
+        char = text[index]
 
         if escaped:
             escaped = False
@@ -181,35 +235,46 @@ def extract_json(text):
             depth += 1
 
         elif char == "}":
+
             depth -= 1
 
             if depth == 0:
-                return text[start:i + 1]
+                return text[
+                    start:index + 1
+                ]
 
-    # Last fallback.
     end = text.rfind("}")
 
     if end != -1:
-        return text[start:end + 1]
+        return text[
+            start:end + 1
+        ]
 
     raise ValueError(
-        "Incomplete JSON returned by Gemini."
+        "Incomplete JSON."
     )
 
 
 def parse_json(text):
-    extracted = extract_json(text)
 
-    # Attempt 1 — normal JSON.
+    extracted = extract_json(
+        text
+    )
+
+    # Normal JSON.
     try:
-        return json.loads(extracted)
+        return json.loads(
+            extracted
+        )
+
     except Exception as error:
+
         print(
-            "Normal JSON parse failed:",
+            "Normal JSON failed:",
             error
         )
 
-    # Attempt 2 — remove trailing commas.
+    # Remove trailing commas.
     repaired = re.sub(
         r",\s*([}\]])",
         r"\1",
@@ -217,14 +282,18 @@ def parse_json(text):
     )
 
     try:
-        return json.loads(repaired)
+        return json.loads(
+            repaired
+        )
+
     except Exception as error:
+
         print(
-            "Repaired JSON parse failed:",
+            "Trailing-comma repair failed:",
             error
         )
 
-    # Attempt 3 — quote common unquoted keys.
+    # Common unquoted-key repair.
     repaired = re.sub(
         r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:',
         r'\1"\2":',
@@ -232,10 +301,14 @@ def parse_json(text):
     )
 
     try:
-        return json.loads(repaired)
+        return json.loads(
+            repaired
+        )
+
     except Exception as error:
+
         print(
-            "Final JSON parse failed:",
+            "Final JSON repair failed:",
             error
         )
 
@@ -245,10 +318,14 @@ def parse_json(text):
 
 
 # ============================================================
-# GEMINI
+# GEMINI API
 # ============================================================
 
-def call_gemini(model, prompt):
+def gemini_request(
+    model,
+    prompt
+):
+
     url = (
         "https://generativelanguage.googleapis.com/"
         "v1beta/models/"
@@ -269,18 +346,21 @@ def call_gemini(model, prompt):
         "generationConfig": {
             "temperature": 0.75,
             "maxOutputTokens": 9000,
-            "responseMimeType": "application/json",
-        },
+            "responseMimeType":
+                "application/json"
+        }
     }
 
     response = requests.post(
         url,
         headers={
-            "x-goog-api-key": GEMINI_API_KEY,
-            "Content-Type": "application/json",
+            "Content-Type":
+                "application/json",
+            "x-goog-api-key":
+                GEMINI_API_KEY
         },
         json=payload,
-        timeout=120,
+        timeout=120
     )
 
     print(
@@ -289,12 +369,14 @@ def call_gemini(model, prompt):
     )
 
     if response.status_code != 200:
+
         print(
-            response.text[:2500]
+            response.text[:2000]
         )
 
         raise RuntimeError(
-            f"Gemini HTTP {response.status_code}"
+            f"Gemini HTTP "
+            f"{response.status_code}"
         )
 
     data = response.json()
@@ -315,40 +397,51 @@ def call_gemini(model, prompt):
         .get("parts", [])
     )
 
-    output = ""
+    text = ""
 
     for part in parts:
+
         if "text" in part:
-            output += str(
+
+            text += str(
                 part["text"]
             )
 
-    if not output.strip():
+    if not text.strip():
         raise RuntimeError(
             "Gemini returned empty text."
         )
 
-    return parse_json(output)
+    return parse_json(
+        text
+    )
 
 
-def generate_content(prompt):
+def generate_with_gemini(
+    prompt
+):
+
     last_error = None
 
-    for index, model in enumerate(
+    for number, model in enumerate(
         MODELS,
         start=1
     ):
+
         print("")
         print(
-            f"Gemini attempt {index}/{len(MODELS)}..."
+            f"Gemini attempt "
+            f"{number}/{len(MODELS)}..."
         )
+
         print(
             "Model:",
             model
         )
 
         try:
-            result = call_gemini(
+
+            result = gemini_request(
                 model,
                 prompt
             )
@@ -363,27 +456,58 @@ def generate_content(prompt):
 
             last_error = error
 
-            error_text = str(error)
+            error_text = str(
+                error
+            )
 
-            # 429 = quota. Do not retry same model.
+            # ------------------------------------------------
+            # 429 QUOTA
+            # ------------------------------------------------
+
             if "429" in error_text:
+
                 print(
-                    "Quota exceeded for this model."
+                    "429 quota exceeded."
                 )
+
                 print(
-                    "Skipping immediately."
+                    "Skipping this model immediately."
                 )
+
                 continue
 
-            # 503 = temporary availability.
+            # ------------------------------------------------
+            # 503 TEMPORARY
+            # ------------------------------------------------
+
             if "503" in error_text:
+
                 print(
-                    "Model temporarily unavailable."
+                    "503 temporary model issue."
                 )
+
                 print(
                     "Moving to next model."
                 )
+
                 time.sleep(2)
+
+                continue
+
+            # ------------------------------------------------
+            # 404
+            # ------------------------------------------------
+
+            if "404" in error_text:
+
+                print(
+                    "404 model unavailable."
+                )
+
+                print(
+                    "Moving to next model."
+                )
+
                 continue
 
             print(
@@ -391,18 +515,14 @@ def generate_content(prompt):
                 error
             )
 
-            continue
-
         except Exception as error:
 
             last_error = error
 
             print(
-                "Generation failed:",
+                "Unexpected Gemini error:",
                 repr(error)
             )
-
-            continue
 
     raise RuntimeError(
         "All Gemini attempts failed: "
@@ -411,33 +531,65 @@ def generate_content(prompt):
 
 
 # ============================================================
-# LOAD AUTOMATION STATE
+# AUTOMATION STATE
 # ============================================================
 
-previous_topics = []
+def load_state():
 
-if STATE_FILE.exists():
+    if not STATE_FILE.exists():
+        return {
+            "previous_topics": []
+        }
+
     try:
-        state = json.loads(
+
+        data = json.loads(
             STATE_FILE.read_text(
                 encoding="utf-8"
             )
         )
 
-        previous_topics = state.get(
+        if not isinstance(
+            data,
+            dict
+        ):
+            return {
+                "previous_topics": []
+            }
+
+        topics = data.get(
             "previous_topics",
             []
         )
 
         if not isinstance(
-            previous_topics,
+            topics,
             list
         ):
-            previous_topics = []
+            topics = []
+
+        data["previous_topics"] = topics
+
+        return data
 
     except Exception:
-        previous_topics = []
 
+        return {
+            "previous_topics": []
+        }
+
+
+state = load_state()
+
+previous_topics = state.get(
+    "previous_topics",
+    []
+)
+
+
+# ============================================================
+# NEWS
+# ============================================================
 
 print("")
 print(
@@ -455,16 +607,11 @@ print(
     len(previous_topics)
 )
 
-
-# ============================================================
-# NEWS
-# ============================================================
-
 print(
     "Fetching fresh AI news..."
 )
 
-news = get_news()
+news = fetch_news()
 
 print(
     "Found",
@@ -473,31 +620,41 @@ print(
 )
 
 if not news:
+
     raise RuntimeError(
         "No fresh AI news found."
     )
 
 
 # ============================================================
-# NEWS FORMAT
+# NEWS CONTEXT
 # ============================================================
 
-news_text = "\n\n".join(
-    [
+news_context = []
+
+for item in news:
+
+    news_context.append(
         (
-            f"HEADLINE: {item['title']}\n"
-            f"DESCRIPTION: {item['description']}\n"
-            f"URL: {item['link']}"
+            "HEADLINE: "
+            + item["title"]
+            + "\nDESCRIPTION: "
+            + item["description"]
+            + "\nURL: "
+            + item["link"]
         )
-        for item in news
-    ]
+    )
+
+
+news_text = "\n\n".join(
+    news_context
 )
 
 
 previous_text = "\n".join(
     [
         "- " + clean_text(topic)
-        for topic in previous_topics[-30:]
+        for topic in previous_topics[-40:]
     ]
 )
 
@@ -506,35 +663,20 @@ if not previous_text:
 
 
 # ============================================================
-# PROMPT
+# CONTENT PROMPT
 # ============================================================
 
 prompt = f"""
-You are the senior AI YouTube producer for
-{CHANNEL_NAME}.
+You are the senior YouTube content producer
+for {CHANNEL_NAME}.
 
-Create ONE completely original YouTube video package.
+Create ONE original premium AI/technology
+YouTube video package.
 
 CHANNEL:
 {CHANNEL_NAME}
 
-CONTENT DIRECTION:
-AI, artificial intelligence, AI tools,
-YouTube automation, creator experiments,
-AI tutorials and useful technology.
-
-The video should feel like a premium technology
-YouTube video.
-
-DO NOT create:
-- animal content
-- anime content
-- generic motivation
-- copied YouTube scripts
-- fake claims
-- boring slideshow content
-
-CURRENT AI NEWS:
+CURRENT NEWS:
 
 {news_text}
 
@@ -542,65 +684,83 @@ PREVIOUS TOPICS:
 
 {previous_text}
 
-Choose a FRESH topic that is meaningfully different
-from previous topics.
+==================================================
+TOPIC
+==================================================
+
+Choose ONE fresh topic.
+
+It must be meaningfully different from previous
+topics.
+
+Preferred subjects:
+
+- AI tools
+- AI automation
+- AI agents
+- YouTube creator workflows
+- AI productivity
+- AI business
+- generative AI
+- new AI technology
+- practical AI experiments
+- AI tutorials
+- AI creator economy
+
+Avoid:
+
+- animals
+- anime
+- generic motivation
+- fake news
+- copied videos
+- boring generic explanations
 
 ==================================================
 LONG VIDEO
 ==================================================
 
-Target duration:
+Target:
+
 3 minutes 15 seconds to 3 minutes 45 seconds.
 
-Target spoken words:
-approximately 470-530 words.
+Target narration:
+
+470-530 words.
 
 Create EXACTLY 9 scenes.
 
-Structure:
+The story structure:
 
-Scene 1:
-Powerful hook.
+1. Powerful hook
+2. Problem/opportunity
+3. Discovery
+4. Step-by-step explanation
+5. Practical example
+6. Tool/workflow
+7. Result/comparison
+8. Key lesson
+9. Conclusion + CTA
 
-Scene 2:
-Problem / opportunity.
+The narration must sound natural when spoken.
 
-Scene 3:
-Discovery / explanation.
+Do NOT write:
 
-Scene 4:
-Step-by-step process.
+"Today we are going to talk about..."
 
-Scene 5:
-Practical example.
+Start with curiosity, a result, a challenge,
+or a surprising statement.
 
-Scene 6:
-Tools / workflow.
+==================================================
+VISUALS
+==================================================
 
-Scene 7:
-Results / comparison.
+Every scene needs a visual that directly matches
+its narration.
 
-Scene 8:
-Key takeaway.
+Use different visual types.
 
-Scene 9:
-Conclusion + natural CTA.
-
-Every scene must contain:
-
-scene_number
-scene_title
-narration
-visual_query
-visual_type
-on_screen_text
-animation_direction
-key_visuals
-
-VISUAL TYPES should be useful for a professional
-motion-graphics renderer.
-
-Examples:
+Possible visual types:
 
 browser_ui
 dashboard
@@ -613,26 +773,7 @@ youtube_ui
 cinematic_title
 cta
 
-Do NOT make every scene the same visual type.
-
-Each visual must directly match the narration.
-
-==================================================
-HOOK
-==================================================
-
-The first 5-10 seconds must immediately create
-curiosity.
-
-Avoid:
-"Today we are going to talk about..."
-
-Prefer:
-a surprising result,
-strong question,
-challenge,
-experiment,
-or unexpected fact.
+Do NOT make every scene identical.
 
 ==================================================
 TITLE
@@ -640,9 +781,10 @@ TITLE
 
 Under 100 characters.
 
-Include 1-2 relevant emojis.
+Use 1-2 relevant emojis.
 
-Examples of relevant emoji:
+Examples:
+
 🤖
 🔥
 🚀
@@ -650,81 +792,82 @@ Examples of relevant emoji:
 ⚡
 🎯
 
-Do not use random emojis.
-
 ==================================================
 DESCRIPTION
 ==================================================
 
-Create a professional YouTube description.
+Professional YouTube description.
 
-Include:
-- what viewers will learn
-- useful context
-- natural CTA
-- relevant hashtags
+Explain what the viewer will learn.
+
+Include a natural CTA.
 
 ==================================================
 HASHTAGS
 ==================================================
 
-Create 5-8 relevant hashtags.
+5-8 hashtags.
 
 ==================================================
 YOUTUBE TAGS
 ==================================================
 
-Create 10-15 useful search tags.
+10-15 tags.
 
 ==================================================
 SHORT
 ==================================================
 
-Also create a Short based on the same topic.
+Create EXACTLY 4 Short scenes.
 
-Create EXACTLY 4 short scenes.
+Short narration:
 
-Total Short narration:
-approximately 80-120 words.
+80-120 words total.
 
-The Short needs:
-- strong first sentence
-- fast pacing
-- useful information
-- clear ending
-- vertical-friendly visual ideas
+The Short must have:
+
+- strong opening
+- fast useful information
+- clear takeaway
+- strong ending
 
 ==================================================
-IMPORTANT JSON RULES
+IMPORTANT
 ==================================================
 
 Return ONLY valid JSON.
 
 No markdown.
+
 No ```json.
-No explanation outside JSON.
 
-Use double quotes for all JSON keys
-and string values.
+No explanation.
 
-Escape quotation marks inside strings.
+Use double quotes.
 
-JSON schema:
+JSON structure:
 
 {{
   "topic": "...",
+
   "source_url": "...",
+
   "title": "...",
+
   "description": "...",
+
   "hashtags": [
     "#AI",
     "#ArtificialIntelligence"
   ],
+
   "tags": [
     "AI",
-    "artificial intelligence"
+    "artificial intelligence",
+    "AI tools"
   ],
-  "script_word_count": 500,
+
+  "script": "...",
 
   "scenes": [
     {{
@@ -758,6 +901,18 @@ JSON schema:
     }}
   ]
 }}
+
+CRITICAL:
+
+The "script" field must contain the COMPLETE
+long-video narration.
+
+The scene narration fields must contain the
+same narration divided across the 9 scenes.
+
+The total script should be 470-530 words.
+
+The JSON must be valid.
 """
 
 
@@ -769,167 +924,119 @@ print(
     "Generating a NEW topic..."
 )
 
-package = generate_content(
+data = generate_with_gemini(
     prompt
 )
 
 
 # ============================================================
-# VALIDATION
+# VALIDATE BASIC FIELDS
 # ============================================================
 
-if not isinstance(
-    package,
-    dict
-):
-    raise RuntimeError(
-        "Gemini result is not a JSON object."
-    )
-
-
-required = [
+required_fields = [
     "topic",
     "title",
     "description",
     "hashtags",
     "tags",
+    "script",
     "scenes",
-    "short_scenes",
+    "short_scenes"
 ]
 
+for field in required_fields:
 
-for field in required:
-    if field not in package:
+    if field not in data:
+
         raise RuntimeError(
-            "Missing field: "
+            "Missing content field: "
             + field
         )
 
 
-scenes = package.get(
+# ============================================================
+# NORMALIZE SCRIPT
+# ============================================================
+
+script = clean_text(
+    data.get("script", "")
+)
+
+
+scenes = data.get(
     "scenes",
     []
 )
 
-short_scenes = package.get(
-    "short_scenes",
-    []
-)
+if not isinstance(
+    scenes,
+    list
+):
+    scenes = []
 
+
+# ------------------------------------------------------------
+# If Gemini forgot script but provided scene narration,
+# rebuild the script automatically.
+# ------------------------------------------------------------
+
+if word_count(script) < 50:
+
+    scene_narration = []
+
+    for scene in scenes:
+
+        narration = clean_text(
+            scene.get(
+                "narration",
+                ""
+            )
+        )
+
+        if narration:
+            scene_narration.append(
+                narration
+            )
+
+    script = " ".join(
+        scene_narration
+    )
+
+
+if word_count(script) < 100:
+
+    raise RuntimeError(
+        "Generated script is too short."
+    )
+
+
+data["script"] = script
+
+
+# ============================================================
+# EXACT 9 LONG SCENES
+# ============================================================
 
 if len(scenes) != 9:
+
     raise RuntimeError(
-        "Expected exactly 9 scenes, got "
+        "Expected exactly 9 long scenes, got "
         + str(len(scenes))
     )
 
-
-if len(short_scenes) != 4:
-    raise RuntimeError(
-        "Expected exactly 4 short scenes, got "
-        + str(len(short_scenes))
-    )
-
-
-# ============================================================
-# NORMALIZE TITLE
-# ============================================================
-
-title = clean_text(
-    package["title"]
-)
-
-if len(title) > 100:
-    title = title[:97].rstrip() + "..."
-
-
-package["title"] = title
-
-
-# ============================================================
-# NORMALIZE HASHTAGS
-# ============================================================
-
-hashtags = package.get(
-    "hashtags",
-    []
-)
-
-if not isinstance(
-    hashtags,
-    list
-):
-    hashtags = []
-
-clean_hashtags = []
-
-for tag in hashtags:
-
-    tag = clean_text(tag)
-
-    if not tag:
-        continue
-
-    if not tag.startswith("#"):
-        tag = "#" + tag
-
-    if tag not in clean_hashtags:
-        clean_hashtags.append(tag)
-
-
-if "#AI" not in clean_hashtags:
-    clean_hashtags.insert(
-        0,
-        "#AI"
-    )
-
-
-package["hashtags"] = (
-    clean_hashtags[:8]
-)
-
-
-# ============================================================
-# NORMALIZE TAGS
-# ============================================================
-
-tags = package.get(
-    "tags",
-    []
-)
-
-if not isinstance(
-    tags,
-    list
-):
-    tags = []
-
-clean_tags = []
-
-for tag in tags:
-
-    tag = clean_text(tag)
-
-    if (
-        tag
-        and tag not in clean_tags
-    ):
-        clean_tags.append(tag)
-
-
-package["tags"] = (
-    clean_tags[:15]
-)
-
-
-# ============================================================
-# NORMALIZE SCENES
-# ============================================================
 
 for index, scene in enumerate(
     scenes,
     start=1
 ):
+
+    if not isinstance(
+        scene,
+        dict
+    ):
+        raise RuntimeError(
+            f"Scene {index} is invalid."
+        )
 
     scene["scene_number"] = index
 
@@ -950,7 +1057,7 @@ for index, scene in enumerate(
     scene["visual_query"] = clean_text(
         scene.get(
             "visual_query",
-            scene["scene_title"]
+            ""
         )
     )
 
@@ -971,36 +1078,77 @@ for index, scene in enumerate(
     scene["animation_direction"] = clean_text(
         scene.get(
             "animation_direction",
-            "subtle professional motion"
+            "professional subtle motion"
         )
     )
 
-    key_visuals = scene.get(
+    visuals = scene.get(
         "key_visuals",
         []
     )
 
     if not isinstance(
-        key_visuals,
+        visuals,
         list
     ):
-        key_visuals = []
+        visuals = []
 
     scene["key_visuals"] = [
         clean_text(item)
-        for item in key_visuals
+        for item in visuals
         if clean_text(item)
     ]
 
+    if not scene["narration"]:
+
+        raise RuntimeError(
+            f"Scene {index} has no narration."
+        )
+
+    if not scene["visual_query"]:
+
+        scene["visual_query"] = (
+            data["topic"]
+            + " technology"
+        )
+
 
 # ============================================================
-# NORMALIZE SHORT SCENES
+# SHORT SCENES
 # ============================================================
+
+short_scenes = data.get(
+    "short_scenes",
+    []
+)
+
+if not isinstance(
+    short_scenes,
+    list
+):
+    short_scenes = []
+
+
+if len(short_scenes) != 4:
+
+    raise RuntimeError(
+        "Expected exactly 4 short scenes, got "
+        + str(len(short_scenes))
+    )
+
 
 for index, scene in enumerate(
     short_scenes,
     start=1
 ):
+
+    if not isinstance(
+        scene,
+        dict
+    ):
+        raise RuntimeError(
+            f"Short scene {index} is invalid."
+        )
 
     scene["scene_number"] = index
 
@@ -1021,7 +1169,7 @@ for index, scene in enumerate(
     scene["visual_query"] = clean_text(
         scene.get(
             "visual_query",
-            scene["scene_title"]
+            data["topic"] + " technology"
         )
     )
 
@@ -1042,87 +1190,268 @@ for index, scene in enumerate(
     scene["animation_direction"] = clean_text(
         scene.get(
             "animation_direction",
-            "fast modern motion"
+            "fast professional motion"
         )
     )
 
-    key_visuals = scene.get(
+    visuals = scene.get(
         "key_visuals",
         []
     )
 
     if not isinstance(
-        key_visuals,
+        visuals,
         list
     ):
-        key_visuals = []
+        visuals = []
 
     scene["key_visuals"] = [
         clean_text(item)
-        for item in key_visuals
+        for item in visuals
         if clean_text(item)
     ]
 
+    if not scene["narration"]:
+
+        raise RuntimeError(
+            f"Short scene {index} has no narration."
+        )
+
 
 # ============================================================
-# WORD COUNT
+# TITLE
 # ============================================================
 
-full_script = " ".join(
-    scene["narration"]
-    for scene in scenes
+title = clean_text(
+    data["title"]
 )
 
-word_count = len(
-    full_script.split()
-)
+if len(title) > 100:
 
-package["script_word_count"] = (
-    word_count
-)
-
-
-if word_count < 400:
-    print(
-        "WARNING: Script is shorter than target:",
-        word_count
+    title = (
+        title[:97].rstrip()
+        + "..."
     )
 
-if word_count > 600:
-    print(
-        "WARNING: Script is longer than target:",
-        word_count
-    )
+data["title"] = title
 
 
 # ============================================================
-# SOURCE
+# HASHTAGS
+# ============================================================
+
+hashtags = data.get(
+    "hashtags",
+    []
+)
+
+if not isinstance(
+    hashtags,
+    list
+):
+    hashtags = []
+
+
+clean_hashtags = []
+
+for hashtag in hashtags:
+
+    hashtag = clean_text(
+        hashtag
+    )
+
+    if not hashtag:
+        continue
+
+    if not hashtag.startswith("#"):
+
+        hashtag = "#" + hashtag
+
+    if hashtag not in clean_hashtags:
+
+        clean_hashtags.append(
+            hashtag
+        )
+
+
+if "#AI" not in clean_hashtags:
+
+    clean_hashtags.insert(
+        0,
+        "#AI"
+    )
+
+
+data["hashtags"] = (
+    clean_hashtags[:8]
+)
+
+
+# ============================================================
+# TAGS
+# ============================================================
+
+tags = data.get(
+    "tags",
+    []
+)
+
+if not isinstance(
+    tags,
+    list
+):
+    tags = []
+
+
+clean_tags = []
+
+for tag in tags:
+
+    tag = clean_text(
+        tag
+    )
+
+    if (
+        tag
+        and tag not in clean_tags
+    ):
+
+        clean_tags.append(
+            tag
+        )
+
+
+data["tags"] = (
+    clean_tags[:15]
+)
+
+
+# ============================================================
+# DESCRIPTION
+# ============================================================
+
+description = clean_text(
+    data["description"]
+)
+
+hashtag_text = " ".join(
+    data["hashtags"]
+)
+
+if hashtag_text:
+
+    if hashtag_text not in description:
+
+        description += (
+            "\n\n"
+            + hashtag_text
+        )
+
+
+data["description"] = description
+
+
+# ============================================================
+# SOURCE URL
 # ============================================================
 
 source_url = clean_text(
-    package.get(
+    data.get(
         "source_url",
         ""
     )
 )
 
-if not source_url:
+if not source_url and news:
 
     source_url = news[0].get(
         "link",
         ""
     )
 
-package["source_url"] = source_url
+
+data["source_url"] = source_url
 
 
 # ============================================================
-# SAVE PACKAGE
+# COMPATIBILITY FIELDS
+# ============================================================
+
+# Current renderer expects "script".
+# Older renderer versions expect "long_scenes".
+# Workflow expects "scenes".
+# We provide ALL THREE.
+
+data["long_scenes"] = scenes
+
+data["scenes"] = scenes
+
+data["short_scenes"] = short_scenes
+
+
+# ============================================================
+# WORD COUNT
+# ============================================================
+
+script_words = word_count(
+    data["script"]
+)
+
+data["script_word_count"] = (
+    script_words
+)
+
+
+# Approximate duration.
+# 145 words/minute.
+estimated_duration = (
+    script_words / 145
+) * 60
+
+
+data[
+    "estimated_duration_seconds"
+] = round(
+    estimated_duration
+)
+
+
+# ============================================================
+# DURATION VALIDATION
+# ============================================================
+
+if script_words < 430:
+
+    print(
+        "WARNING: script is shorter than target:",
+        script_words,
+        "words"
+    )
+
+elif script_words > 570:
+
+    print(
+        "WARNING: script is longer than target:",
+        script_words,
+        "words"
+    )
+
+else:
+
+    print(
+        "Script length OK:",
+        script_words,
+        "words"
+    )
+
+
+# ============================================================
+# SAVE CONTENT PACKAGE
 # ============================================================
 
 PACKAGE_FILE.write_text(
     json.dumps(
-        package,
+        data,
         ensure_ascii=False,
         indent=2
     ),
@@ -1131,37 +1460,51 @@ PACKAGE_FILE.write_text(
 
 
 # ============================================================
-# AUTOMATION STATE
+# UPDATE AUTOMATION STATE
 # ============================================================
 
 topic = clean_text(
-    package["topic"]
+    data["topic"]
 )
 
-if topic and topic not in previous_topics:
+updated_topics = list(
+    previous_topics
+)
 
-    previous_topics.append(
+if topic:
+
+    if topic in updated_topics:
+
+        updated_topics.remove(
+            topic
+        )
+
+    updated_topics.append(
         topic
     )
 
 
-# Keep state manageable.
-previous_topics = (
-    previous_topics[-100:]
+updated_topics = (
+    updated_topics[-100:]
 )
 
-state = {
+
+new_state = {
     "channel": CHANNEL_NAME,
-    "previous_topics": previous_topics,
     "last_topic": topic,
-    "last_title": package["title"],
-    "last_script_word_count": word_count,
+    "last_title": data["title"],
+    "last_script_word_count":
+        script_words,
+    "last_estimated_duration_seconds":
+        round(estimated_duration),
+    "previous_topics":
+        updated_topics
 }
 
 
 STATE_FILE.write_text(
     json.dumps(
-        state,
+        new_state,
         ensure_ascii=False,
         indent=2
     ),
@@ -1170,7 +1513,7 @@ STATE_FILE.write_text(
 
 
 # ============================================================
-# FINAL OUTPUT
+# FINAL VERIFICATION
 # ============================================================
 
 print("")
@@ -1186,46 +1529,73 @@ print(
 
 print(
     "Topic:",
-    package["topic"]
+    data["topic"]
 )
 
 print(
     "Title:",
-    package["title"]
+    data["title"]
 )
 
 print(
     "Script words:",
-    word_count
+    script_words
 )
 
 print(
-    "Scenes:",
-    len(scenes)
+    "Estimated duration:",
+    round(
+        estimated_duration
+    ),
+    "seconds"
+)
+
+print(
+    "Long scenes:",
+    len(
+        data["scenes"]
+    )
 )
 
 print(
     "Short scenes:",
-    len(short_scenes)
+    len(
+        data["short_scenes"]
+    )
 )
 
 print(
     "Hashtags:",
     " ".join(
-        package["hashtags"]
+        data["hashtags"]
     )
 )
 
 print(
-    "Tags:",
+    "YouTube tags:",
     len(
-        package["tags"]
+        data["tags"]
     )
 )
 
 print(
-    "Saved:",
-    PACKAGE_FILE
+    "Script field:",
+    "READY"
+)
+
+print(
+    "long_scenes field:",
+    "READY"
+)
+
+print(
+    "content_package.json:",
+    "READY"
+)
+
+print(
+    "automation_state.json:",
+    "READY"
 )
 
 print(
