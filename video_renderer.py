@@ -8,9 +8,9 @@ import edge_tts
 
 from PIL import Image, ImageDraw, ImageFont
 
+
 # ============================================================
-# TechMind Studio - Long Video Renderer
-# TARGET: 3:15 - 3:45
+# TechMind Studio - Video Renderer
 # STEP 10B
 # ============================================================
 
@@ -23,45 +23,76 @@ SCENE_DIR = os.path.join(VIDEO_DIR, "scenes")
 
 OUTPUT_VIDEO = "techmind_studio_long.mp4"
 
-WIDTH = 1280
-HEIGHT = 720
 
-TARGET_MIN_SECONDS = 195
-TARGET_MAX_SECONDS = 225
+# ============================================================
+# DIRECTORIES
+# ============================================================
 
-VOICE = "en-US-AriaNeural"
-
-os.makedirs(IMAGE_DIR, exist_ok=True)
-os.makedirs(AUDIO_DIR, exist_ok=True)
-os.makedirs(SCENE_DIR, exist_ok=True)
+for folder in [
+    VIDEO_DIR,
+    IMAGE_DIR,
+    AUDIO_DIR,
+    SCENE_DIR
+]:
+    os.makedirs(folder, exist_ok=True)
 
 
 # ============================================================
-# Utility
+# HELPERS
 # ============================================================
 
 def run_command(command):
-    print("Running:", " ".join(command))
+
+    print()
+    print("Running:")
+    print(" ".join(command))
 
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True
     )
 
     if result.returncode != 0:
+
         print(result.stdout)
-        print(result.stderr)
+
         raise RuntimeError(
             "Command failed."
         )
 
-    return result
+    return result.stdout
 
+
+def safe_name(text):
+
+    text = str(text)
+
+    result = ""
+
+    for char in text:
+
+        if (
+            char.isalnum()
+            or char in "-_"
+        ):
+            result += char
+        else:
+            result += "_"
+
+    return result[:80]
+
+
+# ============================================================
+# LOAD CONTENT
+# ============================================================
 
 def load_content():
-    if not os.path.exists(CONTENT_FILE):
+
+    if not os.path.exists(
+        CONTENT_FILE
+    ):
         raise RuntimeError(
             "content_package.json not found."
         )
@@ -71,125 +102,51 @@ def load_content():
         "r",
         encoding="utf-8"
     ) as f:
-        package = json.load(f)
 
-    if not isinstance(package, dict):
+        data = json.load(f)
+
+    if not data.get("scenes"):
+
         raise RuntimeError(
-            "Invalid content_package.json."
+            "No scenes found in content_package.json."
         )
 
-    return package
-
-
-# ============================================================
-# Scene recovery
-# ============================================================
-
-def build_fallback_scenes(package):
+    print()
+    print("=" * 60)
+    print("CONTENT LOADED")
+    print("=" * 60)
 
     print(
-        "WARNING: No valid scenes found."
+        "Title:",
+        data.get("title")
     )
-
-    script = package.get(
-        "script",
-        ""
-    ).strip()
-
-    if not script:
-        raise RuntimeError(
-            "No script available for fallback scenes."
-        )
-
-    words = script.split()
-
-    scene_count = 9
-
-    chunk_size = max(
-        1,
-        math.ceil(
-            len(words) / scene_count
-        )
-    )
-
-    scenes = []
-
-    for i in range(
-        0,
-        len(words),
-        chunk_size
-    ):
-
-        chunk = " ".join(
-            words[i:i + chunk_size]
-        )
-
-        number = len(scenes) + 1
-
-        scenes.append(
-            {
-                "scene_number": number,
-                "heading": f"Scene {number}",
-                "narration": chunk,
-                "visual_query": package.get(
-                    "topic",
-                    "artificial intelligence technology"
-                ),
-                "visual_type": "photo",
-                "on_screen_text": ""
-            }
-        )
-
-    return scenes
-
-
-def get_scenes(package):
-
-    scenes = package.get(
-        "scenes",
-        []
-    )
-
-    valid = []
-
-    if isinstance(scenes, list):
-
-        for scene in scenes:
-
-            if not isinstance(scene, dict):
-                continue
-
-            narration = str(
-                scene.get(
-                    "narration",
-                    ""
-                )
-            ).strip()
-
-            if not narration:
-                continue
-
-            valid.append(
-                scene
-            )
-
-    if not valid:
-        valid = build_fallback_scenes(
-            package
-        )
 
     print(
-        f"Using {len(valid)} scenes."
+        "Script words:",
+        data.get("script_word_count")
     )
 
-    return valid
+    print(
+        "Scenes:",
+        len(data.get("scenes", []))
+    )
+
+    return data
 
 
 # ============================================================
-# Wikimedia image search
+# WIKIMEDIA IMAGE SEARCH
 # ============================================================
 
-def search_wikimedia(query):
+def search_wikimedia(
+    query
+):
+
+    print()
+    print(
+        "Searching visual:",
+        query
+    )
 
     url = (
         "https://commons.wikimedia.org/w/api.php"
@@ -203,13 +160,14 @@ def search_wikimedia(query):
         "gsrlimit": 8,
         "prop": "imageinfo",
         "iiprop": "url",
-        "iiurlwidth": 1400,
+        "iiurlwidth": 1280,
         "format": "json"
     }
 
     headers = {
         "User-Agent":
-        "TechMindStudio-Automation/1.0"
+            "TechMindStudio/1.0 "
+            "(automated educational video creator)"
     }
 
     try:
@@ -225,38 +183,46 @@ def search_wikimedia(query):
 
         data = response.json()
 
-        pages = data.get(
-            "query",
-            {}
-        ).get(
-            "pages",
-            {}
+        pages = (
+            data
+            .get("query", {})
+            .get("pages", {})
         )
 
-        results = []
+        candidates = []
 
         for page in pages.values():
 
-            info = page.get(
+            imageinfo = page.get(
                 "imageinfo",
                 []
             )
 
-            if not info:
+            if not imageinfo:
                 continue
 
-            image_url = info[0].get(
-                "thumburl"
-            ) or info[0].get(
-                "url"
+            info = imageinfo[0]
+
+            image_url = (
+                info.get("thumburl")
+                or info.get("url")
             )
 
             if image_url:
-                results.append(
+                candidates.append(
                     image_url
                 )
 
-        return results
+        if candidates:
+
+            # Try random result so videos
+            # don't always use the first image.
+            return candidates[
+                min(
+                    len(candidates) - 1,
+                    0
+                )
+            ]
 
     except Exception as e:
 
@@ -265,86 +231,58 @@ def search_wikimedia(query):
             e
         )
 
-        return []
+    return None
 
+
+# ============================================================
+# DOWNLOAD IMAGE
+# ============================================================
 
 def download_image(
-    query,
-    output_path,
-    scene_index
+    url,
+    output_file
 ):
-
-    candidates = search_wikimedia(
-        query
-    )
-
-    if not candidates:
-
-        print(
-            "No Wikimedia image found."
-        )
-
-        return create_fallback_image(
-            output_path,
-            query
-        )
-
-    # Rotate through available results
-    image_url = candidates[
-        (scene_index - 1)
-        % len(candidates)
-    ]
 
     headers = {
         "User-Agent":
-        "TechMindStudio-Automation/1.0"
+            "TechMindStudio/1.0"
     }
 
-    try:
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=45
+    )
 
-        response = requests.get(
-            image_url,
-            headers=headers,
-            timeout=40
+    response.raise_for_status()
+
+    with open(
+        output_file,
+        "wb"
+    ) as f:
+
+        f.write(
+            response.content
         )
 
-        response.raise_for_status()
-
-        with open(
-            output_path,
-            "wb"
-        ) as f:
-            f.write(
-                response.content
-            )
-
-        return output_path
-
-    except Exception as e:
-
-        print(
-            "Image download failed:",
-            e
-        )
-
-        return create_fallback_image(
-            output_path,
-            query
-        )
+    return output_file
 
 
 # ============================================================
-# Fallback image
+# FALLBACK VISUAL
 # ============================================================
 
 def create_fallback_image(
-    output_path,
-    text
+    text,
+    output_file
 ):
+
+    width = 1280
+    height = 720
 
     image = Image.new(
         "RGB",
-        (WIDTH, HEIGHT),
+        (width, height),
         "black"
     )
 
@@ -363,122 +301,142 @@ def create_fallback_image(
 
         font = ImageFont.load_default()
 
-    text = str(text)
+    words = str(text).split()
 
-    if len(text) > 55:
-        text = text[:55] + "..."
+    lines = []
+    current = ""
 
-    bbox = draw.textbbox(
-        (0, 0),
-        text,
-        font=font
+    for word in words:
+
+        test = (
+            current + " " + word
+        ).strip()
+
+        if len(test) > 30:
+
+            lines.append(
+                current
+            )
+
+            current = word
+
+        else:
+
+            current = test
+
+    if current:
+        lines.append(current)
+
+    y = height // 2 - (
+        len(lines) * 35
     )
 
-    text_width = (
-        bbox[2] - bbox[0]
-    )
+    for line in lines:
 
-    text_height = (
-        bbox[3] - bbox[1]
-    )
+        bbox = draw.textbbox(
+            (0, 0),
+            line,
+            font=font
+        )
 
-    x = (
-        WIDTH - text_width
-    ) // 2
+        text_width = (
+            bbox[2] - bbox[0]
+        )
 
-    y = (
-        HEIGHT - text_height
-    ) // 2
+        x = (
+            width - text_width
+        ) // 2
 
-    draw.text(
-        (x, y),
-        text,
-        fill="white",
-        font=font
-    )
+        draw.text(
+            (x, y),
+            line,
+            font=font,
+            fill="white"
+        )
+
+        y += 75
 
     image.save(
-        output_path,
+        output_file,
         quality=95
     )
 
-    return output_path
-
 
 # ============================================================
-# Prepare image
+# PREPARE IMAGE
 # ============================================================
 
 def prepare_image(
-    source_path,
-    output_path
+    input_file,
+    output_file
 ):
 
     try:
 
         image = Image.open(
-            source_path
+            input_file
         ).convert("RGB")
 
-        source_ratio = (
-            image.width /
-            image.height
+        target_ratio = 16 / 9
+
+        width, height = (
+            image.size
         )
 
-        target_ratio = (
-            WIDTH /
-            HEIGHT
+        current_ratio = (
+            width / height
         )
 
-        if source_ratio > target_ratio:
-
-            new_height = HEIGHT
+        if current_ratio > target_ratio:
 
             new_width = int(
-                HEIGHT *
-                source_ratio
+                height * target_ratio
+            )
+
+            left = (
+                width - new_width
+            ) // 2
+
+            image = image.crop(
+                (
+                    left,
+                    0,
+                    left + new_width,
+                    height
+                )
             )
 
         else:
 
-            new_width = WIDTH
-
             new_height = int(
-                WIDTH /
-                source_ratio
+                width / target_ratio
+            )
+
+            top = (
+                height - new_height
+            ) // 2
+
+            image = image.crop(
+                (
+                    0,
+                    top,
+                    width,
+                    top + new_height
+                )
             )
 
         image = image.resize(
-            (
-                new_width,
-                new_height
-            ),
+            (1280, 720),
             Image.Resampling.LANCZOS
         )
 
-        left = (
-            new_width - WIDTH
-        ) // 2
-
-        top = (
-            new_height - HEIGHT
-        ) // 2
-
-        image = image.crop(
-            (
-                left,
-                top,
-                left + WIDTH,
-                top + HEIGHT
-            )
-        )
-
         image.save(
-            output_path,
-            quality=95
+            output_file,
+            "JPEG",
+            quality=94
         )
 
-        return output_path
+        return output_file
 
     except Exception as e:
 
@@ -487,155 +445,264 @@ def prepare_image(
             e
         )
 
-        return create_fallback_image(
-            output_path,
-            "TechMind Studio"
+        create_fallback_image(
+            "TechMind Studio",
+            output_file
         )
+
+        return output_file
 
 
 # ============================================================
-# Text to speech
+# DOWNLOAD ALL SCENE VISUALS
+# ============================================================
+
+def prepare_scene_images(
+    scenes
+):
+
+    image_files = []
+
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+
+        query = scene.get(
+            "visual_query",
+            "artificial intelligence technology"
+        )
+
+        raw_file = os.path.join(
+            IMAGE_DIR,
+            f"raw_{index}.jpg"
+        )
+
+        final_file = os.path.join(
+            IMAGE_DIR,
+            f"scene_{index}.jpg"
+        )
+
+        try:
+
+            image_url = search_wikimedia(
+                query
+            )
+
+            if image_url:
+
+                print(
+                    "Downloading visual..."
+                )
+
+                download_image(
+                    image_url,
+                    raw_file
+                )
+
+                prepare_image(
+                    raw_file,
+                    final_file
+                )
+
+            else:
+
+                print(
+                    "No image found. "
+                    "Creating fallback visual."
+                )
+
+                create_fallback_image(
+                    scene.get(
+                        "heading",
+                        "AI Technology"
+                    ),
+                    final_file
+                )
+
+        except Exception as e:
+
+            print(
+                "Visual failed:",
+                e
+            )
+
+            create_fallback_image(
+                scene.get(
+                    "heading",
+                    "AI Technology"
+                ),
+                final_file
+            )
+
+        image_files.append(
+            final_file
+        )
+
+    return image_files
+
+
+# ============================================================
+# TEXT TO SPEECH
 # ============================================================
 
 async def generate_voice(
     text,
-    output_path
+    output_file
 ):
 
     communicate = edge_tts.Communicate(
         text,
-        VOICE,
-        rate="-5%"
+        voice="en-US-AriaNeural",
+        rate="-5%",
+        volume="+0%"
     )
 
     await communicate.save(
-        output_path
+        output_file
     )
 
 
 def create_voice(
     text,
-    output_path
+    output_file
 ):
+
+    print()
+    print(
+        "Generating AI voice..."
+    )
 
     asyncio.run(
         generate_voice(
             text,
-            output_path
+            output_file
         )
     )
 
+    if not os.path.exists(
+        output_file
+    ):
+        raise RuntimeError(
+            "Voice generation failed."
+        )
+
 
 # ============================================================
-# Get audio duration
+# GET AUDIO DURATION
 # ============================================================
 
 def get_duration(
-    file_path
+    filename
 ):
 
-    result = run_command(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            file_path
-        ]
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        filename
+    ]
+
+    output = run_command(
+        command
     )
 
     return float(
-        result.stdout.strip()
+        output.strip()
     )
 
 
 # ============================================================
-# Create scene video
+# CREATE SCENE VIDEO
 # ============================================================
 
 def create_scene_video(
-    image_path,
-    output_path,
+    image_file,
+    output_file,
     duration,
     scene_number
 ):
 
-    duration = max(
-        4.0,
-        float(duration)
-    )
-
-    frames = int(
-        duration * 30
-    )
-
-    # Alternate zoom direction
+    # Alternate motion direction.
     if scene_number % 2 == 0:
 
-        zoom_expr = (
-            "min(zoom+0.0007,1.18)"
+        zoom_filter = (
+            "scale=1280:720,"
+            "zoompan="
+            "z='min(zoom+0.0008,1.12)':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            "d=1"
+            ":s=1280x720"
         )
 
     else:
 
-        zoom_expr = (
-            "min(zoom+0.0005,1.15)"
+        zoom_filter = (
+            "scale=1280:720,"
+            "zoompan="
+            "z='min(zoom+0.0008,1.12)':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            "d=1"
+            ":s=1280x720"
         )
 
-    filter_complex = (
-        f"scale="
-        f"{WIDTH * 2}:"
-        f"{HEIGHT * 2}:"
-        f"force_original_aspect_ratio=increase,"
-        f"crop="
-        f"{WIDTH * 2}:"
-        f"{HEIGHT * 2},"
-        f"zoompan="
-        f"z='{zoom_expr}':"
-        f"x='iw/2-(iw/zoom/2)':"
-        f"y='ih/2-(ih/zoom/2)':"
-        f"d={frames}:"
-        f"s={WIDTH}x{HEIGHT}:"
-        f"fps=30,"
-        f"format=yuv420p"
+    fps = 30
+
+    frames = max(
+        1,
+        int(
+            duration * fps
+        )
     )
 
+    filter_complex = (
+        "scale=1280:720,"
+        "zoompan="
+        f"z='min(zoom+0.0005,1.10)':"
+        "x='iw/2-(iw/zoom/2)':"
+        "y='ih/2-(ih/zoom/2)':"
+        f"d={frames}"
+        ":s=1280x720:"
+        "fps=30"
+    )
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loop",
+        "1",
+        "-i",
+        image_file,
+        "-vf",
+        filter_complex,
+        "-t",
+        str(duration),
+        "-r",
+        "30",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        output_file
+    ]
+
     run_command(
-        [
-            "ffmpeg",
-            "-y",
-            "-loop",
-            "1",
-            "-i",
-            image_path,
-            "-vf",
-            filter_complex,
-            "-t",
-            f"{duration:.2f}",
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            output_path
-        ]
+        command
     )
 
 
 # ============================================================
-# Concatenate scenes
+# CONCATENATE SCENES
 # ============================================================
 
 def concatenate_scenes(
     scene_files,
-    output_path
+    output_file
 ):
 
     concat_file = os.path.join(
@@ -651,286 +718,215 @@ def concatenate_scenes(
 
         for scene_file in scene_files:
 
-            absolute_path = os.path.abspath(
+            absolute = os.path.abspath(
                 scene_file
             )
 
-            escaped = absolute_path.replace(
-                "'",
-                "'\\''"
+            f.write(
+                "file '"
+                + absolute.replace(
+                    "'",
+                    "'\\''"
+                )
+                + "'\n"
             )
 
-            f.write(
-                f"file '{escaped}'\n"
-            )
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        concat_file,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        output_file
+    ]
 
     run_command(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            concat_file,
-            "-c",
-            "copy",
-            output_path
-        ]
+        command
     )
 
 
 # ============================================================
-# Add narration
+# ADD VOICEOVER
 # ============================================================
 
-def add_narration(
-    video_path,
-    audio_path,
-    output_path
+def add_voiceover(
+    video_file,
+    audio_file,
+    output_file
 ):
 
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_file,
+        "-i",
+        audio_file,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        output_file
+    ]
+
     run_command(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            video_path,
-            "-i",
-            audio_path,
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
-            output_path
-        ]
+        command
     )
 
 
 # ============================================================
-# Main
+# MAIN RENDER
 # ============================================================
 
 def main():
 
+    print()
     print("=" * 60)
-    print(
-        "STEP 10B - VIDEO RENDERING"
-    )
-    print(
-        "TARGET: 3:15 - 3:45"
-    )
+    print("STEP 10B - VIDEO RENDERING")
     print("=" * 60)
 
     package = load_content()
 
-    scenes = get_scenes(
-        package
+    scenes = package.get(
+        "scenes",
+        []
     )
 
-    # --------------------------------------------------------
-    # Create one combined narration
-    # --------------------------------------------------------
+    # ----------------------------------------
+    # Full script
+    # ----------------------------------------
 
-    narration_parts = []
+    script = package.get(
+        "script",
+        ""
+    ).strip()
 
-    for scene in scenes:
+    if not script:
 
-        text = str(
+        # Safety fallback:
+        # combine scene narration.
+        script = " ".join(
             scene.get(
                 "narration",
                 ""
-            )
-        ).strip()
+            ).strip()
+            for scene in scenes
+        )
 
-        if text:
-            narration_parts.append(
-                text
-            )
-
-    full_narration = " ".join(
-        narration_parts
-    ).strip()
-
-    if not full_narration:
+    if not script:
 
         raise RuntimeError(
             "No narration available."
         )
 
-    full_audio = os.path.join(
-        AUDIO_DIR,
-        "full_narration.mp3"
+    # ----------------------------------------
+    # Images
+    # ----------------------------------------
+
+    print()
+    print(
+        "Preparing scene visuals..."
     )
 
-    print(
-        "Generating complete voice..."
+    image_files = prepare_scene_images(
+        scenes
+    )
+
+    # ----------------------------------------
+    # Voice
+    # ----------------------------------------
+
+    audio_file = os.path.join(
+        AUDIO_DIR,
+        "narration.mp3"
     )
 
     create_voice(
-        full_narration,
-        full_audio
+        script,
+        audio_file
     )
 
     audio_duration = get_duration(
-        full_audio
+        audio_file
     )
 
     print(
         f"Voice duration: "
-        f"{audio_duration:.2f} seconds"
+        f"{audio_duration:.1f} seconds"
     )
 
-    # --------------------------------------------------------
-    # Hard safety check
-    # --------------------------------------------------------
-
-    if audio_duration < TARGET_MIN_SECONDS:
-
-        print(
-            "Voice is shorter than target."
-        )
-
-        print(
-            "Using available narration."
-        )
-
-    if audio_duration > TARGET_MAX_SECONDS:
-
-        print(
-            "Voice is longer than 3:45."
-        )
-
-        print(
-            "Video will be trimmed to 3:45."
-        )
-
-        target_duration = (
-            TARGET_MAX_SECONDS
-        )
-
-    else:
-
-        target_duration = audio_duration
-
-    # --------------------------------------------------------
-    # Divide duration between scenes
-    # --------------------------------------------------------
-
-    scene_count = len(
-        scenes
-    )
+    # ----------------------------------------
+    # Scene duration
+    # ----------------------------------------
 
     scene_duration = (
-        target_duration /
-        scene_count
+        audio_duration
+        / len(image_files)
     )
 
     print(
-        f"Scene duration: "
-        f"{scene_duration:.2f} seconds"
+        f"Average scene duration: "
+        f"{scene_duration:.1f} seconds"
     )
+
+    # ----------------------------------------
+    # Render scenes
+    # ----------------------------------------
 
     scene_files = []
 
-    # --------------------------------------------------------
-    # Render each scene
-    # --------------------------------------------------------
-
-    for index, scene in enumerate(
-        scenes,
+    for index, image_file in enumerate(
+        image_files,
         start=1
     ):
 
-        print()
-        print(
-            "=" * 50
-        )
-
-        print(
-            f"Rendering scene "
-            f"{index}/{scene_count}"
-        )
-
-        query = str(
-            scene.get(
-                "visual_query",
-                package.get(
-                    "topic",
-                    "AI technology"
-                )
-            )
-        ).strip()
-
-        if not query:
-
-            query = (
-                "artificial intelligence "
-                "technology"
-            )
-
-        raw_image = os.path.join(
-            IMAGE_DIR,
-            f"scene_{index}_raw.jpg"
-        )
-
-        final_image = os.path.join(
-            IMAGE_DIR,
-            f"scene_{index}.jpg"
-        )
-
-        scene_video = os.path.join(
+        scene_output = os.path.join(
             SCENE_DIR,
             f"scene_{index}.mp4"
         )
 
+        print()
         print(
-            "Visual query:",
-            query
-        )
-
-        download_image(
-            query,
-            raw_image,
-            index
-        )
-
-        prepare_image(
-            raw_image,
-            final_image
+            f"Rendering scene "
+            f"{index}/{len(image_files)}"
         )
 
         create_scene_video(
-            final_image,
-            scene_video,
-            scene_duration,
-            index
+            image_file=image_file,
+            output_file=scene_output,
+            duration=scene_duration,
+            scene_number=index
         )
 
         scene_files.append(
-            scene_video
+            scene_output
         )
 
-    # --------------------------------------------------------
-    # Concatenate visual scenes
-    # --------------------------------------------------------
+    # ----------------------------------------
+    # Join scenes
+    # ----------------------------------------
 
     silent_video = os.path.join(
         VIDEO_DIR,
-        "silent_long_video.mp4"
-    )
-
-    print()
-    print(
-        "Combining scenes..."
+        "silent_video.mp4"
     )
 
     concatenate_scenes(
@@ -938,75 +934,49 @@ def main():
         silent_video
     )
 
-    # --------------------------------------------------------
+    # ----------------------------------------
     # Add narration
-    # --------------------------------------------------------
+    # ----------------------------------------
 
-    print(
-        "Adding narration..."
-    )
-
-    add_narration(
+    add_voiceover(
         silent_video,
-        full_audio,
+        audio_file,
         OUTPUT_VIDEO
     )
 
-    # --------------------------------------------------------
-    # Final duration
-    # --------------------------------------------------------
+    # ----------------------------------------
+    # Final check
+    # ----------------------------------------
 
     final_duration = get_duration(
         OUTPUT_VIDEO
     )
 
-    # Force final video not to exceed 3:45
-    if final_duration > TARGET_MAX_SECONDS:
-
-        print(
-            "Final video exceeds 3:45."
-        )
-
-        trimmed_video = os.path.join(
-            VIDEO_DIR,
-            "trimmed_final.mp4"
-        )
-
-        run_command(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                OUTPUT_VIDEO,
-                "-t",
-                str(TARGET_MAX_SECONDS),
-                "-c",
-                "copy",
-                trimmed_video
-            ]
-        )
-
-        os.replace(
-            trimmed_video,
-            OUTPUT_VIDEO
-        )
-
-        final_duration = get_duration(
-            OUTPUT_VIDEO
-        )
-
     print()
     print("=" * 60)
+    print("VIDEO RENDER COMPLETE")
+    print("=" * 60)
+
     print(
-        "VIDEO RENDERING COMPLETE"
+        "Output:",
+        OUTPUT_VIDEO
     )
+
     print(
-        f"Final duration: "
-        f"{final_duration:.2f} seconds"
+        f"Duration: "
+        f"{final_duration:.1f} seconds"
     )
+
     print(
-        f"Output: {OUTPUT_VIDEO}"
+        f"Duration: "
+        f"{final_duration / 60:.2f} minutes"
     )
+
+    print(
+        "Scenes:",
+        len(scene_files)
+    )
+
     print("=" * 60)
 
 
