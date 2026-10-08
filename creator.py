@@ -1,45 +1,34 @@
-import json
 import os
 import re
+import json
 import time
-import math
-import random
 import requests
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from datetime import datetime, timezone
 
 
 # ============================================================
-# TECHMIND STUDIO — AI CONTENT ENGINE
-# STEP 2
-# Original tutorial-focused content generation
+# TECHMIND STUDIO — AI CONTENT CREATOR
 # ============================================================
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY is missing.")
 
 PACKAGE_FILE = Path("content_package.json")
 STATE_FILE = Path("automation_state.json")
 
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
-    ""
-)
+CHANNEL_NAME = "TechMind Studio"
 
-NEWS_URL = (
-    "https://news.google.com/rss/search?"
-    "q=AI%20OR%20artificial%20intelligence"
-    "&hl=en-US&gl=US&ceid=US:en"
-)
-
+# IMPORTANT:
+# Quota-exhausted models are skipped immediately.
+# Do NOT keep retrying a 429 model.
 MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
     "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
 ]
-
-TARGET_MIN_WORDS = 480
-TARGET_MAX_WORDS = 530
-
-SCENE_COUNT = 9
 
 
 # ============================================================
@@ -47,278 +36,251 @@ SCENE_COUNT = 9
 # ============================================================
 
 def clean_text(value):
-    if not value:
+    if value is None:
         return ""
 
     value = str(value)
 
-    value = re.sub(
-        r"\s+",
-        " ",
-        value
-    )
+    value = value.replace("\r", " ")
+    value = re.sub(r"\s+", " ", value)
 
     return value.strip()
 
 
-def word_count(text):
-    return len(
-        clean_text(text).split()
-    )
+def get_news():
+    feeds = [
+        (
+            "https://news.google.com/rss/search?"
+            "q=AI+artificial+intelligence+when:1d"
+            "&hl=en-US&gl=US&ceid=US:en"
+        ),
+        (
+            "https://news.google.com/rss/search?"
+            "q=generative+AI+technology+when:1d"
+            "&hl=en-US&gl=US&ceid=US:en"
+        ),
+        (
+            "https://news.google.com/rss/search?"
+            "q=AI+tools+YouTube+creator+when:1d"
+            "&hl=en-US&gl=US&ceid=US:en"
+        ),
+    ]
+
+    results = []
+    seen = set()
+
+    for feed_url in feeds:
+        try:
+            response = requests.get(
+                feed_url,
+                timeout=30,
+                headers={
+                    "User-Agent": "TechMindStudio/1.0"
+                },
+            )
+
+            response.raise_for_status()
+
+            root = ET.fromstring(response.text)
+
+            for item in root.findall(".//item"):
+                title = clean_text(
+                    item.findtext("title")
+                )
+
+                link = clean_text(
+                    item.findtext("link")
+                )
+
+                description = clean_text(
+                    item.findtext("description")
+                )
+
+                if not title:
+                    continue
+
+                key = title.lower()
+
+                if key in seen:
+                    continue
+
+                seen.add(key)
+
+                results.append({
+                    "title": title,
+                    "link": link,
+                    "description": description[:800],
+                })
+
+        except Exception as error:
+            print(
+                "News feed error:",
+                repr(error)
+            )
+
+    return results[:60]
 
 
-def strip_code_fences(text):
-    text = text.strip()
+# ============================================================
+# JSON EXTRACTION / REPAIR
+# ============================================================
 
+def extract_json(text):
+    if not text:
+        raise ValueError(
+            "Gemini returned empty response."
+        )
+
+    text = str(text).strip()
+
+    # Remove markdown fences.
     text = re.sub(
-        r"^```json\s*",
+        r"```json\s*",
         "",
         text,
-        flags=re.I
+        flags=re.IGNORECASE
     )
 
     text = re.sub(
-        r"^```\s*",
+        r"```\s*",
         "",
         text
     )
 
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text
-    )
+    start = text.find("{")
 
-    return text.strip()
+    if start == -1:
+        raise ValueError(
+            "No JSON object found."
+        )
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for i in range(start, len(text)):
+
+        char = text[i]
+
+        if escaped:
+            escaped = False
+            continue
+
+        if char == "\\":
+            escaped = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if char == "{":
+            depth += 1
+
+        elif char == "}":
+            depth -= 1
+
+            if depth == 0:
+                return text[start:i + 1]
+
+    # Last fallback.
+    end = text.rfind("}")
+
+    if end != -1:
+        return text[start:end + 1]
+
+    raise ValueError(
+        "Incomplete JSON returned by Gemini."
+    )
 
 
 def parse_json(text):
+    extracted = extract_json(text)
 
-    text = strip_code_fences(text)
-
+    # Attempt 1 — normal JSON.
     try:
-        return json.loads(text)
-
-    except Exception:
-        start = text.find("{")
-        end = text.rfind("}")
-
-        if start >= 0 and end > start:
-
-            candidate = text[
-                start:end + 1
-            ]
-
-            return json.loads(candidate)
-
-        raise
-
-
-# ============================================================
-# NEWS
-# ============================================================
-
-def fetch_ai_news():
-
-    print(
-        "Fetching fresh AI news..."
-    )
-
-    try:
-
-        response = requests.get(
-            NEWS_URL,
-            timeout=20,
-            headers={
-                "User-Agent":
-                "TechMindStudio/1.0"
-            }
-        )
-
-        response.raise_for_status()
-
-        root = ET.fromstring(
-            response.text
-        )
-
-        headlines = []
-
-        for item in root.findall(
-            ".//item"
-        ):
-
-            title = item.findtext(
-                "title"
-            )
-
-            if title:
-
-                title = clean_text(
-                    title
-                )
-
-                if title not in headlines:
-                    headlines.append(
-                        title
-                    )
-
+        return json.loads(extracted)
+    except Exception as error:
         print(
-            "Found",
-            len(headlines),
-            "headlines."
+            "Normal JSON parse failed:",
+            error
         )
 
-        return headlines[:20]
-
-    except Exception as e:
-
-        print(
-            "News fetch failed:",
-            e
-        )
-
-        return []
-
-
-# ============================================================
-# PREVIOUS TOPICS
-# ============================================================
-
-def load_previous_topics():
-
-    if not STATE_FILE.exists():
-        return []
+    # Attempt 2 — remove trailing commas.
+    repaired = re.sub(
+        r",\s*([}\]])",
+        r"\1",
+        extracted
+    )
 
     try:
-
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            data = json.load(f)
-
-        topics = data.get(
-            "previous_topics",
-            []
+        return json.loads(repaired)
+    except Exception as error:
+        print(
+            "Repaired JSON parse failed:",
+            error
         )
 
-        if isinstance(
-            topics,
-            list
-        ):
-            return topics[-30:]
-
-    except Exception:
-        pass
-
-    return []
-
-
-def save_state(
-    topic,
-    title
-):
-
-    state = {}
-
-    if STATE_FILE.exists():
-
-        try:
-
-            with open(
-                STATE_FILE,
-                "r",
-                encoding="utf-8"
-            ) as f:
-
-                state = json.load(f)
-
-        except Exception:
-            state = {}
-
-    topics = state.get(
-        "previous_topics",
-        []
+    # Attempt 3 — quote common unquoted keys.
+    repaired = re.sub(
+        r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:',
+        r'\1"\2":',
+        repaired
     )
 
-    if not isinstance(
-        topics,
-        list
-    ):
-        topics = []
-
-    topics.append(
-        clean_text(topic)
-    )
-
-    topics = topics[-30:]
-
-    state[
-        "previous_topics"
-    ] = topics
-
-    state[
-        "last_title"
-    ] = title
-
-    state[
-        "last_run"
-    ] = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    with open(
-        STATE_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            state,
-            f,
-            indent=2,
-            ensure_ascii=False
+    try:
+        return json.loads(repaired)
+    except Exception as error:
+        print(
+            "Final JSON parse failed:",
+            error
         )
+
+    raise ValueError(
+        "Gemini returned invalid JSON."
+    )
 
 
 # ============================================================
 # GEMINI
 # ============================================================
 
-def call_gemini(
-    prompt,
-    model
-):
-
+def call_gemini(model, prompt):
     url = (
         "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{model}:generateContent"
+        "v1beta/models/"
+        + model
+        + ":generateContent"
     )
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.75,
+            "maxOutputTokens": 9000,
+            "responseMimeType": "application/json",
+        },
+    }
 
     response = requests.post(
         url,
-        params={
-            "key": GEMINI_API_KEY
+        headers={
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json",
         },
-        json={
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": prompt
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.85,
-                "topP": 0.92,
-                "maxOutputTokens": 10000
-            }
-        },
-        timeout=90
+        json=payload,
+        timeout=120,
     )
 
     print(
@@ -327,13 +289,12 @@ def call_gemini(
     )
 
     if response.status_code != 200:
-
         print(
-            response.text[:1000]
+            response.text[:2500]
         )
 
         raise RuntimeError(
-            f"Gemini error {response.status_code}"
+            f"Gemini HTTP {response.status_code}"
         )
 
     data = response.json()
@@ -354,736 +315,94 @@ def call_gemini(
         .get("parts", [])
     )
 
-    text = ""
+    output = ""
 
     for part in parts:
-
         if "text" in part:
-            text += part["text"]
+            output += str(
+                part["text"]
+            )
 
-    if not text.strip():
-
+    if not output.strip():
         raise RuntimeError(
             "Gemini returned empty text."
         )
 
-    return text
+    return parse_json(output)
 
 
-# ============================================================
-# PROMPT
-# ============================================================
+def generate_content(prompt):
+    last_error = None
 
-def build_prompt(
-    headlines,
-    previous_topics
-):
-
-    news_text = "\n".join(
-        f"- {x}"
-        for x in headlines
-    )
-
-    previous_text = "\n".join(
-        f"- {x}"
-        for x in previous_topics
-    )
-
-    return f"""
-You are the senior YouTube content strategist,
-scriptwriter and visual director for:
-
-TECHMIND STUDIO
-
-Create ONE completely original YouTube tutorial
-about AI, YouTube automation, AI tools, or AI-powered
-creator workflows.
-
-The video must feel like a premium modern technology
-tutorial, not a slideshow.
-
-IMPORTANT CONTENT DIRECTION:
-
-Use a strong "I Built / I Tested / Here's How"
-storytelling angle whenever appropriate.
-
-Preferred example:
-
-"I Built a Viral YouTube Channel Using AI —
-Here's Exactly How"
-
-The video must teach the viewer something useful.
-
-Do NOT copy another creator's:
-- script
-- title wording
-- thumbnail
-- exact scenes
-- distinctive visual identity
-- dialogue
-- jokes
-
-Create original material.
-
-VIDEO LENGTH:
-
-Target:
-480–530 spoken words.
-
-The finished narration should normally land around
-3:15–3:45.
-
-ABSOLUTE MAXIMUM:
-3:50.
-
-STRUCTURE:
-
-1. 0–10 sec:
-   powerful curiosity hook
-
-2. Problem:
-   explain why the normal approach is difficult
-
-3. Discovery:
-   introduce the AI-powered workflow
-
-4. Step-by-step:
-   show how to build the channel
-
-5. Practical examples:
-   explain actual decisions
-
-6. Results / expected outcome:
-   explain what the workflow achieves
-
-7. Final takeaway
-
-8. Natural CTA:
-   Like, subscribe and comment
-
-VISUAL DIRECTION:
-
-This is extremely important.
-
-Every scene must be designed for
-professional motion graphics.
-
-NO generic stock-photo slideshow.
-
-Visuals should include things like:
-
-- realistic browser UI
-- YouTube-style dashboard mockups
-- search bars
-- typing animations
-- AI tool cards
-- workflow diagrams
-- animated arrows
-- progress bars
-- charts
-- counters
-- comparison cards
-- highlighted keywords
-- thumbnail mockups
-- title cards
-- channel analytics mockups
-- cursor movement
-- notification animations
-- subscribe animations
-- clean technology backgrounds
-- cinematic transitions
-
-The visuals must clearly match what the narrator
-is saying.
-
-VISUAL TIMING:
-
-A major visual should normally remain on screen
-about 6–12 seconds.
-
-NEVER design a scene around one static image
-lasting 20–30 seconds.
-
-Create visual changes frequently.
-
-Create exactly 9 major scenes.
-
-Each scene should have a clear purpose.
-
-For every scene provide:
-
-- scene_number
-- narration
-- visual_query
-- visual_type
-- on_screen_text
-- animation_direction
-- key_visuals
-
-visual_type examples:
-
-"browser_ui"
-"dashboard"
-"motion_graphic"
-"animated_chart"
-"workflow_diagram"
-"comparison_cards"
-"thumbnail_mockup"
-"youtube_ui"
-"cinematic_title"
-"cta"
-
-animation_direction must explain
-how the renderer should animate the scene.
-
-Example:
-
-"Search bar types the query, results appear,
-top result highlights, then camera smoothly
-moves toward the selected result."
-
-key_visuals must contain 2–4 concrete visual elements.
-
-TITLE:
-
-Under 100 characters.
-
-Use 1–2 relevant emojis.
-
-Make it curiosity-driven but truthful.
-
-DESCRIPTION:
-
-Write a useful YouTube description.
-
-Include relevant hashtags.
-
-HASHTAGS:
-
-5–8 relevant hashtags.
-
-TAGS:
-
-10–15 YouTube search tags.
-
-CTA:
-
-The final scene should naturally encourage:
-
-LIKE
-SHARE
-SUBSCRIBE
-
-without sounding desperate.
-
-FRESHNESS:
-
-Here are current AI-related headlines:
-
-{news_text}
-
-Avoid simply repeating a headline.
-
-Previous topics already used:
-
-{previous_text}
-
-Do not make the new topic substantially identical
-to previous topics.
-
-OUTPUT:
-
-Return ONLY valid JSON.
-
-Use exactly this structure:
-
-{{
-  "topic": "",
-  "title": "",
-  "hook": "",
-  "description": "",
-  "hashtags": [],
-  "tags": [],
-  "script": "",
-  "scenes": [
-    {{
-      "scene_number": 1,
-      "narration": "",
-      "visual_query": "",
-      "visual_type": "",
-      "on_screen_text": "",
-      "animation_direction": "",
-      "key_visuals": []
-    }}
-  ]
-}}
-
-Exactly 9 scenes.
-
-No markdown.
-No explanation outside JSON.
-"""
-
-
-# ============================================================
-# VALIDATION
-# ============================================================
-
-def normalize_output(data):
-
-    if not isinstance(
-        data,
-        dict
+    for index, model in enumerate(
+        MODELS,
+        start=1
     ):
-        raise RuntimeError(
-            "Gemini output is not an object."
+        print("")
+        print(
+            f"Gemini attempt {index}/{len(MODELS)}..."
         )
-
-    title = clean_text(
-        data.get(
-            "title",
-            ""
-        )
-    )
-
-    topic = clean_text(
-        data.get(
-            "topic",
-            ""
-        )
-    )
-
-    hook = clean_text(
-        data.get(
-            "hook",
-            ""
-        )
-    )
-
-    description = clean_text(
-        data.get(
-            "description",
-            ""
-        )
-    )
-
-    script = clean_text(
-        data.get(
-            "script",
-            ""
-        )
-    )
-
-    hashtags = data.get(
-        "hashtags",
-        []
-    )
-
-    tags = data.get(
-        "tags",
-        []
-    )
-
-    scenes = data.get(
-        "scenes",
-        []
-    )
-
-    if not isinstance(
-        hashtags,
-        list
-    ):
-        hashtags = []
-
-    if not isinstance(
-        tags,
-        list
-    ):
-        tags = []
-
-    if not isinstance(
-        scenes,
-        list
-    ):
-        scenes = []
-
-    hashtags = [
-        clean_text(x)
-        for x in hashtags
-        if clean_text(x)
-    ]
-
-    tags = [
-        clean_text(x)
-        for x in tags
-        if clean_text(x)
-    ]
-
-    # Ensure hashtag format
-    fixed_hashtags = []
-
-    for tag in hashtags:
-
-        if not tag.startswith("#"):
-            tag = "#" + tag
-
-        fixed_hashtags.append(
-            tag.replace(
-                " ",
-                ""
-            )
-        )
-
-    hashtags = fixed_hashtags[:8]
-
-    if len(hashtags) < 5:
-
-        defaults = [
-            "#AI",
-            "#ArtificialIntelligence",
-            "#YouTubeAutomation",
-            "#AITools",
-            "#TechMindStudio"
-        ]
-
-        for item in defaults:
-
-            if item not in hashtags:
-                hashtags.append(item)
-
-            if len(hashtags) >= 5:
-                break
-
-    tags = tags[:15]
-
-    if len(tags) < 10:
-
-        defaults = [
-            "AI tools",
-            "AI YouTube",
-            "YouTube automation",
-            "faceless YouTube",
-            "AI content creation",
-            "AI video",
-            "YouTube growth",
-            "AI creator",
-            "YouTube channel",
-            "TechMind Studio"
-        ]
-
-        for item in defaults:
-
-            if item not in tags:
-                tags.append(item)
-
-            if len(tags) >= 10:
-                break
-
-    normalized_scenes = []
-
-    for index in range(
-        SCENE_COUNT
-    ):
-
-        source = (
-            scenes[index]
-            if index < len(scenes)
-            and isinstance(
-                scenes[index],
-                dict
-            )
-            else {}
-        )
-
-        narration = clean_text(
-            source.get(
-                "narration",
-                ""
-            )
-        )
-
-        visual_query = clean_text(
-            source.get(
-                "visual_query",
-                ""
-            )
-        )
-
-        visual_type = clean_text(
-            source.get(
-                "visual_type",
-                "motion_graphic"
-            )
-        )
-
-        on_screen_text = clean_text(
-            source.get(
-                "on_screen_text",
-                ""
-            )
-        )
-
-        animation_direction = clean_text(
-            source.get(
-                "animation_direction",
-                ""
-            )
-        )
-
-        key_visuals = source.get(
-            "key_visuals",
-            []
-        )
-
-        if not isinstance(
-            key_visuals,
-            list
-        ):
-            key_visuals = []
-
-        key_visuals = [
-            clean_text(x)
-            for x in key_visuals
-            if clean_text(x)
-        ]
-
-        normalized_scenes.append(
-            {
-                "scene_number":
-                    index + 1,
-                "narration":
-                    narration,
-                "visual_query":
-                    visual_query,
-                "visual_type":
-                    visual_type,
-                "on_screen_text":
-                    on_screen_text,
-                "animation_direction":
-                    animation_direction,
-                "key_visuals":
-                    key_visuals[:4]
-            }
-        )
-
-    # --------------------------------------------------------
-    # Fallbacks
-    # --------------------------------------------------------
-
-    fallback_narrations = [
-        "The first step is finding a niche where people already want answers, instead of creating content blindly.",
-        "Next, use AI to turn audience demand into specific video ideas with a clear problem and a strong curiosity gap.",
-        "Then build a script around a powerful opening, useful information, examples, and a clear payoff for the viewer.",
-        "AI tools can help create natural narration, but the story and information still need to be useful and original.",
-        "The visuals should explain the idea through interfaces, diagrams, charts, and animated callouts instead of random stock images.",
-        "A strong title and thumbnail work together to create curiosity while accurately representing what the video delivers.",
-        "Once the video is ready, the workflow can prepare the description, hashtags, tags, thumbnail, and upload package automatically.",
-        "The goal is not to publish more low-quality videos, but to build a repeatable system that produces genuinely useful content.",
-        "Finally, turn the strongest ideas into a consistent publishing system and keep improving based on what viewers actually respond to."
-    ]
-
-    fallback_types = [
-        "browser_ui",
-        "workflow_diagram",
-        "motion_graphic",
-        "dashboard",
-        "animated_chart",
-        "thumbnail_mockup",
-        "youtube_ui",
-        "comparison_cards",
-        "cta"
-    ]
-
-    for index, scene in enumerate(
-        normalized_scenes
-    ):
-
-        if not scene["narration"]:
-            scene["narration"] = (
-                fallback_narrations[index]
-            )
-
-        if not scene["visual_query"]:
-
-            scene["visual_query"] = (
-                "AI YouTube creator "
-                "workflow technology "
-                "interface"
-            )
-
-        if not scene["visual_type"]:
-
-            scene["visual_type"] = (
-                fallback_types[index]
-            )
-
-        if not scene["on_screen_text"]:
-
-            scene["on_screen_text"] = (
-                [
-                    "FIND THE RIGHT NICHE",
-                    "FIND VIDEO IDEAS",
-                    "BUILD THE HOOK",
-                    "WRITE THE SCRIPT",
-                    "CREATE THE VISUALS",
-                    "DESIGN THE THUMBNAIL",
-                    "PREPARE THE UPLOAD",
-                    "AUTOMATE THE WORKFLOW",
-                    "BUILD THE SYSTEM"
-                ][index]
-            )
-
-        if not scene[
-            "animation_direction"
-        ]:
-
-            scene[
-                "animation_direction"
-            ] = (
-                "Use smooth cinematic motion, "
-                "progressive reveals, subtle "
-                "camera movement and clear "
-                "highlight animations."
-            )
-
-        if not scene[
-            "key_visuals"
-        ]:
-
-            scene[
-                "key_visuals"
-            ] = [
-                "clean technology interface",
-                "animated highlight",
-                "relevant diagram"
-            ]
-
-    if not title:
-
-        title = (
-            "I Built a Viral YouTube "
-            "Channel Using AI 🤖🚀"
-        )
-
-    if not topic:
-
-        topic = (
-            "Building a YouTube channel "
-            "with AI"
-        )
-
-    if not hook:
-
-        hook = (
-            "What if AI could help build "
-            "almost the entire YouTube "
-            "workflow?"
-        )
-
-    if not description:
-
-        description = (
-            "Learn how to build a modern "
-            "AI-powered YouTube workflow "
-            "from niche research to publishing. "
-            "This TechMind Studio tutorial "
-            "breaks down the process step by step."
-        )
-
-    return {
-        "topic": topic,
-        "title": title[:100],
-        "hook": hook,
-        "description": description,
-        "hashtags": hashtags,
-        "tags": tags,
-        "script": script,
-        "scenes": normalized_scenes
-    }
-
-
-# ============================================================
-# MAIN GENERATION
-# ============================================================
-
-if not GEMINI_API_KEY:
-
-    raise RuntimeError(
-        "GEMINI_API_KEY secret is missing."
-    )
-
-
-headlines = fetch_ai_news()
-
-previous_topics = (
-    load_previous_topics()
-)
-
-print(
-    "Previous topics:",
-    len(previous_topics)
-)
-
-prompt = build_prompt(
-    headlines,
-    previous_topics
-)
-
-
-result = None
-last_error = None
-
-for attempt in range(1, 6):
-
-    model = MODELS[
-        (attempt - 1)
-        % len(MODELS)
-    ]
-
-    print(
-        f"\nGemini attempt "
-        f"{attempt}/5..."
-    )
-
-    print(
-        "Model:",
-        model
-    )
-
-    try:
-
-        raw = call_gemini(
-            prompt,
+        print(
+            "Model:",
             model
         )
 
-        parsed = parse_json(
-            raw
-        )
-
-        result = normalize_output(
-            parsed
-        )
-
-        break
-
-    except Exception as e:
-
-        last_error = e
-
-        print(
-            "Generation failed:",
-            e
-        )
-
-        if attempt < 5:
-
-            time.sleep(
-                3 * attempt
+        try:
+            result = call_gemini(
+                model,
+                prompt
             )
 
+            print(
+                "Gemini generation successful."
+            )
 
-if result is None:
+            return result
+
+        except RuntimeError as error:
+
+            last_error = error
+
+            error_text = str(error)
+
+            # 429 = quota. Do not retry same model.
+            if "429" in error_text:
+                print(
+                    "Quota exceeded for this model."
+                )
+                print(
+                    "Skipping immediately."
+                )
+                continue
+
+            # 503 = temporary availability.
+            if "503" in error_text:
+                print(
+                    "Model temporarily unavailable."
+                )
+                print(
+                    "Moving to next model."
+                )
+                time.sleep(2)
+                continue
+
+            print(
+                "Generation failed:",
+                error
+            )
+
+            continue
+
+        except Exception as error:
+
+            last_error = error
+
+            print(
+                "Generation failed:",
+                repr(error)
+            )
+
+            continue
 
     raise RuntimeError(
         "All Gemini attempts failed: "
@@ -1092,185 +411,823 @@ if result is None:
 
 
 # ============================================================
-# SCRIPT VALIDATION
+# LOAD AUTOMATION STATE
 # ============================================================
 
-count = word_count(
-    result["script"]
+previous_topics = []
+
+if STATE_FILE.exists():
+    try:
+        state = json.loads(
+            STATE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        previous_topics = state.get(
+            "previous_topics",
+            []
+        )
+
+        if not isinstance(
+            previous_topics,
+            list
+        ):
+            previous_topics = []
+
+    except Exception:
+        previous_topics = []
+
+
+print("")
+print(
+    "================================================"
+)
+print(
+    "TechMind Studio - Automation Engine"
+)
+print(
+    "================================================"
 )
 
 print(
-    "\n=========================================="
+    "Previous topics:",
+    len(previous_topics)
 )
 
-print(
-    "CONTENT GENERATED"
-)
+
+# ============================================================
+# NEWS
+# ============================================================
 
 print(
-    "=========================================="
+    "Fetching fresh AI news..."
 )
 
+news = get_news()
+
 print(
-    "Title:",
-    result["title"]
+    "Found",
+    len(news),
+    "headlines."
+)
+
+if not news:
+    raise RuntimeError(
+        "No fresh AI news found."
+    )
+
+
+# ============================================================
+# NEWS FORMAT
+# ============================================================
+
+news_text = "\n\n".join(
+    [
+        (
+            f"HEADLINE: {item['title']}\n"
+            f"DESCRIPTION: {item['description']}\n"
+            f"URL: {item['link']}"
+        )
+        for item in news
+    ]
+)
+
+
+previous_text = "\n".join(
+    [
+        "- " + clean_text(topic)
+        for topic in previous_topics[-30:]
+    ]
+)
+
+if not previous_text:
+    previous_text = "None"
+
+
+# ============================================================
+# PROMPT
+# ============================================================
+
+prompt = f"""
+You are the senior AI YouTube producer for
+{CHANNEL_NAME}.
+
+Create ONE completely original YouTube video package.
+
+CHANNEL:
+{CHANNEL_NAME}
+
+CONTENT DIRECTION:
+AI, artificial intelligence, AI tools,
+YouTube automation, creator experiments,
+AI tutorials and useful technology.
+
+The video should feel like a premium technology
+YouTube video.
+
+DO NOT create:
+- animal content
+- anime content
+- generic motivation
+- copied YouTube scripts
+- fake claims
+- boring slideshow content
+
+CURRENT AI NEWS:
+
+{news_text}
+
+PREVIOUS TOPICS:
+
+{previous_text}
+
+Choose a FRESH topic that is meaningfully different
+from previous topics.
+
+==================================================
+LONG VIDEO
+==================================================
+
+Target duration:
+3 minutes 15 seconds to 3 minutes 45 seconds.
+
+Target spoken words:
+approximately 470-530 words.
+
+Create EXACTLY 9 scenes.
+
+Structure:
+
+Scene 1:
+Powerful hook.
+
+Scene 2:
+Problem / opportunity.
+
+Scene 3:
+Discovery / explanation.
+
+Scene 4:
+Step-by-step process.
+
+Scene 5:
+Practical example.
+
+Scene 6:
+Tools / workflow.
+
+Scene 7:
+Results / comparison.
+
+Scene 8:
+Key takeaway.
+
+Scene 9:
+Conclusion + natural CTA.
+
+Every scene must contain:
+
+scene_number
+scene_title
+narration
+visual_query
+visual_type
+on_screen_text
+animation_direction
+key_visuals
+
+VISUAL TYPES should be useful for a professional
+motion-graphics renderer.
+
+Examples:
+
+browser_ui
+dashboard
+motion_graphic
+animated_chart
+workflow_diagram
+comparison_cards
+thumbnail_mockup
+youtube_ui
+cinematic_title
+cta
+
+Do NOT make every scene the same visual type.
+
+Each visual must directly match the narration.
+
+==================================================
+HOOK
+==================================================
+
+The first 5-10 seconds must immediately create
+curiosity.
+
+Avoid:
+"Today we are going to talk about..."
+
+Prefer:
+a surprising result,
+strong question,
+challenge,
+experiment,
+or unexpected fact.
+
+==================================================
+TITLE
+==================================================
+
+Under 100 characters.
+
+Include 1-2 relevant emojis.
+
+Examples of relevant emoji:
+🤖
+🔥
+🚀
+💡
+⚡
+🎯
+
+Do not use random emojis.
+
+==================================================
+DESCRIPTION
+==================================================
+
+Create a professional YouTube description.
+
+Include:
+- what viewers will learn
+- useful context
+- natural CTA
+- relevant hashtags
+
+==================================================
+HASHTAGS
+==================================================
+
+Create 5-8 relevant hashtags.
+
+==================================================
+YOUTUBE TAGS
+==================================================
+
+Create 10-15 useful search tags.
+
+==================================================
+SHORT
+==================================================
+
+Also create a Short based on the same topic.
+
+Create EXACTLY 4 short scenes.
+
+Total Short narration:
+approximately 80-120 words.
+
+The Short needs:
+- strong first sentence
+- fast pacing
+- useful information
+- clear ending
+- vertical-friendly visual ideas
+
+==================================================
+IMPORTANT JSON RULES
+==================================================
+
+Return ONLY valid JSON.
+
+No markdown.
+No ```json.
+No explanation outside JSON.
+
+Use double quotes for all JSON keys
+and string values.
+
+Escape quotation marks inside strings.
+
+JSON schema:
+
+{{
+  "topic": "...",
+  "source_url": "...",
+  "title": "...",
+  "description": "...",
+  "hashtags": [
+    "#AI",
+    "#ArtificialIntelligence"
+  ],
+  "tags": [
+    "AI",
+    "artificial intelligence"
+  ],
+  "script_word_count": 500,
+
+  "scenes": [
+    {{
+      "scene_number": 1,
+      "scene_title": "...",
+      "narration": "...",
+      "visual_query": "...",
+      "visual_type": "cinematic_title",
+      "on_screen_text": "...",
+      "animation_direction": "...",
+      "key_visuals": [
+        "...",
+        "..."
+      ]
+    }}
+  ],
+
+  "short_scenes": [
+    {{
+      "scene_number": 1,
+      "scene_title": "...",
+      "narration": "...",
+      "visual_query": "...",
+      "visual_type": "motion_graphic",
+      "on_screen_text": "...",
+      "animation_direction": "...",
+      "key_visuals": [
+        "...",
+        "..."
+      ]
+    }}
+  ]
+}}
+"""
+
+
+# ============================================================
+# GENERATE
+# ============================================================
+
+print(
+    "Generating a NEW topic..."
+)
+
+package = generate_content(
+    prompt
+)
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+if not isinstance(
+    package,
+    dict
+):
+    raise RuntimeError(
+        "Gemini result is not a JSON object."
+    )
+
+
+required = [
+    "topic",
+    "title",
+    "description",
+    "hashtags",
+    "tags",
+    "scenes",
+    "short_scenes",
+]
+
+
+for field in required:
+    if field not in package:
+        raise RuntimeError(
+            "Missing field: "
+            + field
+        )
+
+
+scenes = package.get(
+    "scenes",
+    []
+)
+
+short_scenes = package.get(
+    "short_scenes",
+    []
+)
+
+
+if len(scenes) != 9:
+    raise RuntimeError(
+        "Expected exactly 9 scenes, got "
+        + str(len(scenes))
+    )
+
+
+if len(short_scenes) != 4:
+    raise RuntimeError(
+        "Expected exactly 4 short scenes, got "
+        + str(len(short_scenes))
+    )
+
+
+# ============================================================
+# NORMALIZE TITLE
+# ============================================================
+
+title = clean_text(
+    package["title"]
+)
+
+if len(title) > 100:
+    title = title[:97].rstrip() + "..."
+
+
+package["title"] = title
+
+
+# ============================================================
+# NORMALIZE HASHTAGS
+# ============================================================
+
+hashtags = package.get(
+    "hashtags",
+    []
+)
+
+if not isinstance(
+    hashtags,
+    list
+):
+    hashtags = []
+
+clean_hashtags = []
+
+for tag in hashtags:
+
+    tag = clean_text(tag)
+
+    if not tag:
+        continue
+
+    if not tag.startswith("#"):
+        tag = "#" + tag
+
+    if tag not in clean_hashtags:
+        clean_hashtags.append(tag)
+
+
+if "#AI" not in clean_hashtags:
+    clean_hashtags.insert(
+        0,
+        "#AI"
+    )
+
+
+package["hashtags"] = (
+    clean_hashtags[:8]
+)
+
+
+# ============================================================
+# NORMALIZE TAGS
+# ============================================================
+
+tags = package.get(
+    "tags",
+    []
+)
+
+if not isinstance(
+    tags,
+    list
+):
+    tags = []
+
+clean_tags = []
+
+for tag in tags:
+
+    tag = clean_text(tag)
+
+    if (
+        tag
+        and tag not in clean_tags
+    ):
+        clean_tags.append(tag)
+
+
+package["tags"] = (
+    clean_tags[:15]
+)
+
+
+# ============================================================
+# NORMALIZE SCENES
+# ============================================================
+
+for index, scene in enumerate(
+    scenes,
+    start=1
+):
+
+    scene["scene_number"] = index
+
+    scene["scene_title"] = clean_text(
+        scene.get(
+            "scene_title",
+            f"Scene {index}"
+        )
+    )
+
+    scene["narration"] = clean_text(
+        scene.get(
+            "narration",
+            ""
+        )
+    )
+
+    scene["visual_query"] = clean_text(
+        scene.get(
+            "visual_query",
+            scene["scene_title"]
+        )
+    )
+
+    scene["visual_type"] = clean_text(
+        scene.get(
+            "visual_type",
+            "motion_graphic"
+        )
+    )
+
+    scene["on_screen_text"] = clean_text(
+        scene.get(
+            "on_screen_text",
+            ""
+        )
+    )
+
+    scene["animation_direction"] = clean_text(
+        scene.get(
+            "animation_direction",
+            "subtle professional motion"
+        )
+    )
+
+    key_visuals = scene.get(
+        "key_visuals",
+        []
+    )
+
+    if not isinstance(
+        key_visuals,
+        list
+    ):
+        key_visuals = []
+
+    scene["key_visuals"] = [
+        clean_text(item)
+        for item in key_visuals
+        if clean_text(item)
+    ]
+
+
+# ============================================================
+# NORMALIZE SHORT SCENES
+# ============================================================
+
+for index, scene in enumerate(
+    short_scenes,
+    start=1
+):
+
+    scene["scene_number"] = index
+
+    scene["scene_title"] = clean_text(
+        scene.get(
+            "scene_title",
+            f"Short Scene {index}"
+        )
+    )
+
+    scene["narration"] = clean_text(
+        scene.get(
+            "narration",
+            ""
+        )
+    )
+
+    scene["visual_query"] = clean_text(
+        scene.get(
+            "visual_query",
+            scene["scene_title"]
+        )
+    )
+
+    scene["visual_type"] = clean_text(
+        scene.get(
+            "visual_type",
+            "motion_graphic"
+        )
+    )
+
+    scene["on_screen_text"] = clean_text(
+        scene.get(
+            "on_screen_text",
+            ""
+        )
+    )
+
+    scene["animation_direction"] = clean_text(
+        scene.get(
+            "animation_direction",
+            "fast modern motion"
+        )
+    )
+
+    key_visuals = scene.get(
+        "key_visuals",
+        []
+    )
+
+    if not isinstance(
+        key_visuals,
+        list
+    ):
+        key_visuals = []
+
+    scene["key_visuals"] = [
+        clean_text(item)
+        for item in key_visuals
+        if clean_text(item)
+    ]
+
+
+# ============================================================
+# WORD COUNT
+# ============================================================
+
+full_script = " ".join(
+    scene["narration"]
+    for scene in scenes
+)
+
+word_count = len(
+    full_script.split()
+)
+
+package["script_word_count"] = (
+    word_count
+)
+
+
+if word_count < 400:
+    print(
+        "WARNING: Script is shorter than target:",
+        word_count
+    )
+
+if word_count > 600:
+    print(
+        "WARNING: Script is longer than target:",
+        word_count
+    )
+
+
+# ============================================================
+# SOURCE
+# ============================================================
+
+source_url = clean_text(
+    package.get(
+        "source_url",
+        ""
+    )
+)
+
+if not source_url:
+
+    source_url = news[0].get(
+        "link",
+        ""
+    )
+
+package["source_url"] = source_url
+
+
+# ============================================================
+# SAVE PACKAGE
+# ============================================================
+
+PACKAGE_FILE.write_text(
+    json.dumps(
+        package,
+        ensure_ascii=False,
+        indent=2
+    ),
+    encoding="utf-8"
+)
+
+
+# ============================================================
+# AUTOMATION STATE
+# ============================================================
+
+topic = clean_text(
+    package["topic"]
+)
+
+if topic and topic not in previous_topics:
+
+    previous_topics.append(
+        topic
+    )
+
+
+# Keep state manageable.
+previous_topics = (
+    previous_topics[-100:]
+)
+
+state = {
+    "channel": CHANNEL_NAME,
+    "previous_topics": previous_topics,
+    "last_topic": topic,
+    "last_title": package["title"],
+    "last_script_word_count": word_count,
+}
+
+
+STATE_FILE.write_text(
+    json.dumps(
+        state,
+        ensure_ascii=False,
+        indent=2
+    ),
+    encoding="utf-8"
+)
+
+
+# ============================================================
+# FINAL OUTPUT
+# ============================================================
+
+print("")
+print(
+    "================================================"
+)
+print(
+    "CONTENT PACKAGE CREATED SUCCESSFULLY"
+)
+print(
+    "================================================"
 )
 
 print(
     "Topic:",
-    result["topic"]
+    package["topic"]
+)
+
+print(
+    "Title:",
+    package["title"]
 )
 
 print(
     "Script words:",
-    count
+    word_count
 )
 
 print(
     "Scenes:",
-    len(result["scenes"])
+    len(scenes)
+)
+
+print(
+    "Short scenes:",
+    len(short_scenes)
 )
 
 print(
     "Hashtags:",
-    ", ".join(
-        result["hashtags"]
+    " ".join(
+        package["hashtags"]
     )
 )
 
 print(
     "Tags:",
-    ", ".join(
-        result["tags"]
+    len(
+        package["tags"]
     )
 )
 
-
-# Do not reject slightly short/long output.
-# Keep the pipeline resilient.
-if count < 420:
-
-    print(
-        "WARNING: script is shorter "
-        "than target."
-    )
-
-if count > 600:
-
-    print(
-        "WARNING: script is longer "
-        "than target."
-    )
-
-
-# ============================================================
-# ESTIMATE DURATION
-# ============================================================
-
-WORDS_PER_MINUTE = 145
-
-estimated_seconds = (
-    count
-    / WORDS_PER_MINUTE
-    * 60
-)
-
-estimated_seconds = min(
-    estimated_seconds,
-    230
-)
-
-result[
-    "script_word_count"
-] = count
-
-result[
-    "estimated_duration_seconds"
-] = round(
-    estimated_seconds,
-    2
-)
-
-result[
-    "generated_at"
-] = datetime.now(
-    timezone.utc
-).isoformat()
-
-result[
-    "brand"
-] = "TechMind Studio"
-
-result[
-    "format"
-] = "tutorial"
-
-result[
-    "visual_style"
-] = (
-    "original 4K motion graphics "
-    "technology tutorial"
-)
-
-
-# ============================================================
-# SAVE
-# ============================================================
-
-with open(
-    PACKAGE_FILE,
-    "w",
-    encoding="utf-8"
-) as f:
-
-    json.dump(
-        result,
-        f,
-        indent=2,
-        ensure_ascii=False
-    )
-
-
-save_state(
-    result["topic"],
-    result["title"]
-)
-
-
 print(
-    "\n=========================================="
-)
-
-print(
-    "CONTENT PACKAGE SAVED"
-)
-
-print(
-    "=========================================="
-)
-
-print(
-    "File:",
+    "Saved:",
     PACKAGE_FILE
 )
 
 print(
-    "Estimated duration:",
-    round(
-        estimated_seconds,
-        1
-    ),
-    "seconds"
-)
-
-print(
-    "=========================================="
-)
-
-print(
-    "TECHMIND STUDIO CONTENT READY"
-)
-
-print(
-    "=========================================="
+    "================================================"
 )
