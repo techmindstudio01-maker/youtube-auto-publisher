@@ -1,3 +1,4 @@
+
 import os
 import json
 import sys
@@ -7,476 +8,334 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 
 
 # ============================================================
-# TECHMIND STUDIO
-# YOUTUBE UPLOADER
+# TECHMIND STUDIO — YOUTUBE UPLOADER
+# Supports long videos, Shorts, metadata, tags and thumbnails
 # ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
 
 TOKEN_ENV = "YOUTUBE_TOKEN_JSON"
 
-VIDEO_FILE = Path("techmind_studio_long.mp4")
-PACKAGE_FILE = Path("content_package.json")
+LONG_VIDEO_FILE = BASE_DIR / "techmind_studio_long.mp4"
+SHORT_VIDEO_FILE = BASE_DIR / "techmind_studio_short.mp4"
+PACKAGE_FILE = BASE_DIR / "content_package.json"
+THUMBNAIL_FILE = BASE_DIR / "thumbnail.jpg"
 
-SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload"
-]
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-
-# ============================================================
-# ERROR
-# ============================================================
-
-def fail(message):
-    print("")
-    print("ERROR:", message)
-    print("")
-    sys.exit(1)
+CATEGORY_ID = "28"  # Science & Technology
 
 
-# ============================================================
-# LOAD CONTENT
-# ============================================================
+def log(message):
+    print(f"[TechMind Studio] {message}", flush=True)
 
-def load_package():
 
-    if not PACKAGE_FILE.exists():
-        fail(
-            "content_package.json not found."
+def load_token():
+    raw_token = os.environ.get(TOKEN_ENV)
+
+    if not raw_token:
+        raise RuntimeError(
+            f"Missing GitHub Actions secret: {TOKEN_ENV}"
         )
 
     try:
+        token_data = json.loads(raw_token)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"{TOKEN_ENV} must contain valid JSON."
+        ) from exc
 
-        with open(
-            PACKAGE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
+    credentials = Credentials.from_authorized_user_info(
+        token_data,
+        scopes=SCOPES,
+    )
 
-            return json.load(file)
-
-    except Exception as error:
-
-        fail(
-            "Could not read content_package.json: "
-            + str(error)
-        )
-
-
-# ============================================================
-# LOAD + REFRESH YOUTUBE CREDENTIALS
-# ============================================================
-
-def load_credentials():
-
-    token_json = os.environ.get(
-        TOKEN_ENV,
-        ""
-    ).strip()
-
-    if not token_json:
-
-        fail(
-            "YOUTUBE_TOKEN_JSON GitHub secret is missing."
-        )
-
-    try:
-
-        token_data = json.loads(
-            token_json
-        )
-
-    except Exception as error:
-
-        fail(
-            "YOUTUBE_TOKEN_JSON is invalid JSON: "
-            + str(error)
-        )
-
-    required = [
-        "client_id",
-        "client_secret",
-        "refresh_token"
-    ]
-
-    for field in required:
-
-        if not token_data.get(field):
-
-            fail(
-                "YOUTUBE_TOKEN_JSON is missing: "
-                + field
-            )
-
-    try:
-
-        credentials = Credentials(
-            token=token_data.get(
-                "access_token"
-            ),
-            refresh_token=token_data.get(
-                "refresh_token"
-            ),
-            token_uri=token_data.get(
-                "token_uri",
-                "https://oauth2.googleapis.com/token"
-            ),
-            client_id=token_data.get(
-                "client_id"
-            ),
-            client_secret=token_data.get(
-                "client_secret"
-            ),
-            scopes=SCOPES
-        )
-
-    except Exception as error:
-
-        fail(
-            "Could not create YouTube credentials: "
-            + str(error)
-        )
-
-    # --------------------------------------------------------
-    # AUTOMATIC ACCESS TOKEN REFRESH
-    # --------------------------------------------------------
+    if credentials.expired and credentials.refresh_token:
+        log("Refreshing YouTube access token...")
+        credentials.refresh(Request())
 
     if not credentials.valid:
-
-        if not credentials.refresh_token:
-
-            fail(
-                "YouTube access token is invalid and "
-                "no refresh token is available."
-            )
-
-        print(
-            "Access token is expired/invalid."
-        )
-
-        print(
-            "Refreshing automatically..."
-        )
-
-        try:
-
-            credentials.refresh(
-                Request()
-            )
-
-        except Exception as error:
-
-            fail(
-                "YouTube token refresh failed: "
-                + str(error)
-            )
-
-        if not credentials.valid:
-
-            fail(
-                "YouTube credentials are still invalid "
-                "after refresh."
-            )
-
-        print(
-            "Access token successfully refreshed."
-        )
-
-    else:
-
-        print(
-            "YouTube access token is valid."
+        raise RuntimeError(
+            "YouTube credentials are invalid. "
+            "Refresh the OAuth token and update the GitHub secret."
         )
 
     return credentials
 
 
-# ============================================================
-# YOUTUBE SERVICE
-# ============================================================
-
-def create_youtube_service(
-    credentials
-):
-
-    try:
-
-        youtube = build(
-            "youtube",
-            "v3",
-            credentials=credentials
+def load_package():
+    if not PACKAGE_FILE.exists():
+        raise FileNotFoundError(
+            f"Content package not found: {PACKAGE_FILE.name}"
         )
 
-        print(
-            "YouTube API connection ready."
-        )
+    with PACKAGE_FILE.open("r", encoding="utf-8") as file:
+        package = json.load(file)
 
-        return youtube
+    if not isinstance(package, dict):
+        raise ValueError("Content package must be a JSON object.")
 
-    except Exception as error:
-
-        fail(
-            "Could not connect to YouTube API: "
-            + str(error)
-        )
+    return package
 
 
-# ============================================================
-# DESCRIPTION
-# ============================================================
+def get_text(package, *keys, default=""):
+    for key in keys:
+        value = package.get(key)
 
-def build_description(data):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
 
-    description = str(
-        data.get(
-            "description",
-            ""
-        )
-    ).strip()
-
-    hashtags = data.get(
-        "hashtags",
-        []
-    )
-
-    if not isinstance(
-        hashtags,
-        list
-    ):
-
-        hashtags = []
-
-    hashtag_text = " ".join(
-        str(tag).strip()
-        for tag in hashtags
-        if str(tag).strip()
-    )
-
-    if hashtag_text:
-
-        if hashtag_text not in description:
-
-            description += (
-                "\n\n"
-                + hashtag_text
-            )
-
-    return description.strip()
+    return default
 
 
-# ============================================================
-# TAGS
-# ============================================================
+def get_tags(package):
+    tags = package.get("tags", package.get("youtube_tags", []))
 
-def build_tags(data):
+    if isinstance(tags, str):
+        tags = [
+            item.strip().lstrip("#")
+            for item in tags.split(",")
+            if item.strip()
+        ]
 
-    tags = data.get(
-        "tags",
-        []
-    )
-
-    if not isinstance(
-        tags,
-        list
-    ):
-
+    if not isinstance(tags, list):
         return []
 
     clean_tags = []
+    seen = set()
 
     for tag in tags:
+        if not isinstance(tag, str):
+            continue
 
-        tag = str(tag).strip()
+        tag = tag.strip().lstrip("#")
 
-        if tag and tag not in clean_tags:
+        if tag and tag.lower() not in seen:
+            clean_tags.append(tag)
+            seen.add(tag.lower())
 
-            clean_tags.append(
-                tag
-            )
+    # YouTube video tags have a 500-character total limit.
+    result = []
+    total = 0
 
-    return clean_tags[:15]
+    for tag in clean_tags:
+        extra = len(tag) + (1 if result else 0)
+
+        if total + extra > 500:
+            break
+
+        result.append(tag)
+        total += extra
+
+    return result
 
 
-# ============================================================
-# UPLOAD
-# ============================================================
+def get_hashtags(package, description):
+    hashtags = package.get("hashtags", [])
 
-def upload_video(
-    youtube,
-    data
-):
+    if isinstance(hashtags, str):
+        hashtags = hashtags.split()
 
-    if not VIDEO_FILE.exists():
+    if not isinstance(hashtags, list):
+        hashtags = []
 
-        fail(
-            "techmind_studio_long.mp4 not found."
-        )
+    clean = []
 
-    title = str(
-        data.get(
-            "title",
-            "TechMind Studio"
-        )
-    ).strip()
+    for hashtag in hashtags:
+        if not isinstance(hashtag, str):
+            continue
 
-    description = build_description(
-        data
+        hashtag = hashtag.strip().replace(" ", "")
+        hashtag = hashtag.lstrip("#")
+
+        if hashtag and hashtag.replace("_", "").isalnum():
+            clean.append("#" + hashtag)
+
+    # Preserve hashtags already included in the description.
+    for hashtag in description.split():
+        if hashtag.startswith("#"):
+            normalized = hashtag.strip(".,!?;:")
+            if normalized not in clean:
+                clean.append(normalized)
+
+    # Add a brand hashtag if none exists.
+    if not any(tag.lower() == "#techmindstudio" for tag in clean):
+        clean.append("#TechMindStudio")
+
+    return list(dict.fromkeys(clean))[:10]
+
+
+def prepare_metadata(package, is_short=False):
+    title = get_text(
+        package,
+        "short_title" if is_short else "title",
+        "title",
+        default="AI Tutorial | TechMind Studio",
     )
 
-    tags = build_tags(
-        data
+    # YouTube titles must not exceed 100 characters.
+    title = title[:100].strip()
+
+    description = get_text(
+        package,
+        "short_description" if is_short else "description",
+        "description",
+        default="Learn more about AI with TechMind Studio.",
     )
 
-    body = {
+    hashtags = get_hashtags(package, description)
+
+    # Append hashtags only when they are not already present.
+    existing = set(description.split())
+    missing = [tag for tag in hashtags if tag not in existing]
+
+    if missing:
+        description = description.rstrip() + "\n\n" + " ".join(missing)
+
+    description = description[:5000]
+
+    tags = get_tags(package)
+
+    return {
         "snippet": {
             "title": title,
             "description": description,
             "tags": tags,
-            "categoryId": "28"
+            "categoryId": CATEGORY_ID,
+            "defaultLanguage": "en",
         },
         "status": {
-            "privacyStatus": "public",
-            "selfDeclaredMadeForKids": False
-        }
+            "privacyStatus": os.environ.get(
+                "YOUTUBE_PRIVACY_STATUS", "public"
+            ),
+            "selfDeclaredMadeForKids": False,
+        },
     }
 
-    print("")
-    print(
-        "=========================================="
-    )
-    print(
-        "TechMind Studio - YouTube Upload"
-    )
-    print(
-        "=========================================="
-    )
 
-    print(
-        "Title:",
-        title
-    )
+def upload_video(youtube, video_path, package, is_short=False):
+    if not video_path.is_file():
+        log(f"Skipping missing file: {video_path.name}")
+        return None
 
-    print(
-        "Video:",
-        VIDEO_FILE
-    )
+    if video_path.stat().st_size == 0:
+        raise ValueError(f"Video file is empty: {video_path.name}")
 
-    print(
-        "Privacy:",
-        "public"
-    )
+    metadata = prepare_metadata(package, is_short=is_short)
 
-    print(
-        "Tags:",
-        len(tags)
-    )
-
-    print(
-        "Starting upload..."
-    )
+    log(f"Uploading {'Short' if is_short else 'long video'}...")
+    log(f"Title: {metadata['snippet']['title']}")
 
     media = MediaFileUpload(
-        str(VIDEO_FILE),
+        str(video_path),
         mimetype="video/mp4",
+        chunksize=8 * 1024 * 1024,
         resumable=True,
-        chunksize=8 * 1024 * 1024
     )
 
-    try:
+    request = youtube.videos().insert(
+        part="snippet,status",
+        body=metadata,
+        media_body=media,
+    )
 
-        request = youtube.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=media
-        )
+    response = None
 
-        response = None
+    while response is None:
+        status, response = request.next_chunk()
 
-        while response is None:
+        if status:
+            log(f"Upload progress: {int(status.progress() * 100)}%")
 
-            status, response = request.next_chunk()
+    video_id = response.get("id")
 
-            if status:
+    if not video_id:
+        raise RuntimeError("YouTube did not return a video ID.")
 
-                progress = int(
-                    status.progress() * 100
-                )
+    log(f"Upload successful: https://www.youtube.com/watch?v={video_id}")
 
-                print(
-                    f"Upload progress: {progress}%"
-                )
+    # A Short is determined by YouTube based on video properties,
+    # not simply by setting a metadata flag.
+    if not is_short and THUMBNAIL_FILE.is_file():
+        try:
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(
+                    str(THUMBNAIL_FILE),
+                    mimetype="image/jpeg",
+                ),
+            ).execute()
 
-        video_id = response.get(
-            "id"
-        )
+            log("Custom thumbnail uploaded.")
+        except HttpError as exc:
+            log(f"Thumbnail upload failed: {exc}")
 
-        if not video_id:
+    return video_id
 
-            fail(
-                "YouTube upload returned no video ID."
-            )
-
-        print("")
-        print(
-            "=========================================="
-        )
-        print(
-            "YOUTUBE UPLOAD SUCCESSFUL"
-        )
-        print(
-            "=========================================="
-        )
-
-        print(
-            "Video ID:",
-            video_id
-        )
-
-        print(
-            "YouTube URL:",
-            "https://www.youtube.com/watch?v="
-            + video_id
-        )
-
-        print(
-            "=========================================="
-        )
-
-        return video_id
-
-    except Exception as error:
-
-        fail(
-            "YouTube upload failed: "
-            + str(error)
-        )
-
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
+    log("Starting YouTube upload pipeline...")
 
-    print("")
-    print(
-        "Starting TechMind Studio YouTube uploader..."
+    package = load_package()
+    credentials = load_token()
+
+    youtube = build(
+        "youtube",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False,
     )
 
-    data = load_package()
+    uploaded = []
 
-    credentials = load_credentials()
-
-    youtube = create_youtube_service(
-        credentials
-    )
-
-    upload_video(
+    # Upload long-form video first.
+    long_id = upload_video(
         youtube,
-        data
+        LONG_VIDEO_FILE,
+        package,
+        is_short=False,
     )
+
+    if long_id:
+        uploaded.append({
+            "type": "long",
+            "video_id": long_id,
+        })
+
+    # Upload a Short only when the creator has generated one.
+    short_id = upload_video(
+        youtube,
+        SHORT_VIDEO_FILE,
+        package,
+        is_short=True,
+    )
+
+    if short_id:
+        uploaded.append({
+            "type": "short",
+            "video_id": short_id,
+        })
+
+    if not uploaded:
+        raise RuntimeError(
+            "No videos were uploaded. Check generated MP4 files."
+        )
+
+    result_file = BASE_DIR / "upload_results.json"
+
+    with result_file.open("w", encoding="utf-8") as file:
+        json.dump(uploaded, file, indent=2)
+
+    log(f"Finished. Uploaded {len(uploaded)} video(s).")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        log(f"ERROR: {exc}")
+        sys.exit(1)
